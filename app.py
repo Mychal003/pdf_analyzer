@@ -11,7 +11,6 @@ from datetime import datetime
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
-# Lokalne ścieżki - dostosowane do środowiska bez Dockera
 if os.name == 'nt':  # Windows
     app.config['UPLOAD_FOLDER'] = os.path.join(os.getcwd(), 'temp_uploads')
     log_file = os.path.join(os.getcwd(), 'logs', 'pdf_analyzer.log')
@@ -38,6 +37,51 @@ DANGER_KEYWORDS = ['/JS', '/JavaScript', '/AA', '/OpenAction', '/Launch', '/Embe
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def secure_delete_file(file_path):
+    """Securely delete file by overwriting with zeros before deletion"""
+    try:
+        if not os.path.exists(file_path):
+            return True
+            
+        # Get file size
+        file_size = os.path.getsize(file_path)
+        
+        # Overwrite file with zeros multiple times for security
+        with open(file_path, 'r+b') as f:
+            # First pass: zeros
+            f.seek(0)
+            f.write(b'\x00' * file_size)
+            f.flush()
+            os.fsync(f.fileno())  # Force write to disk
+            
+            # Second pass: random data
+            f.seek(0)
+            f.write(os.urandom(file_size))
+            f.flush()
+            os.fsync(f.fileno())
+            
+            # Third pass: zeros again
+            f.seek(0)
+            f.write(b'\x00' * file_size)
+            f.flush()
+            os.fsync(f.fileno())
+        
+        # Finally delete the file
+        os.remove(file_path)
+        logging.info(f"File securely deleted: {file_path}")
+        return True
+        
+    except Exception as e:
+        logging.error(f"Error securely deleting file {file_path}: {str(e)}")
+        # Fallback to regular deletion
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                logging.warning(f"File deleted with fallback method: {file_path}")
+        except:
+            logging.error(f"Failed to delete file even with fallback: {file_path}")
+        return False
 
 def analyze_pdf_safety(file_path):
     """Analyze PDF and return safety assessment"""
@@ -133,7 +177,7 @@ def analyze_pdf():
         file.save(file_path)
         logging.info(f"Analyzing file: {filename} (ID: {unique_id})")
         
-        # Analyze PDF
+        # Analyze PDF immediately
         result = analyze_pdf_safety(file_path)
         result['filename'] = filename
         result['analysis_id'] = unique_id
@@ -149,12 +193,10 @@ def analyze_pdf():
         return jsonify({'error': 'File processing failed'}), 500
         
     finally:
-        # Clean up uploaded file
-        try:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-        except Exception as e:
-            logging.warning(f"Failed to clean up file {file_path}: {str(e)}")
+        # CRITICAL: Securely delete the uploaded file immediately after analysis
+        if os.path.exists(file_path):
+            secure_delete_file(file_path)
+            logging.info(f"Uploaded file securely removed: {temp_filename}")
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -165,10 +207,28 @@ def health_check():
         'version': '1.0.0'
     })
 
+# Cleanup function for any leftover files (run on startup)
+def cleanup_temp_files():
+    """Clean up any temporary files left from previous sessions"""
+    try:
+        if os.path.exists(app.config['UPLOAD_FOLDER']):
+            for filename in os.listdir(app.config['UPLOAD_FOLDER']):
+                file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                if os.path.isfile(file_path):
+                    secure_delete_file(file_path)
+                    logging.info(f"Cleaned up leftover file: {filename}")
+    except Exception as e:
+        logging.error(f"Error during cleanup: {str(e)}")
+
 # Development server configuration
 if __name__ == '__main__':
     print("Starting PDF Analyzer Server...")
     print(f"Upload folder: {app.config['UPLOAD_FOLDER']}")
     print(f"Log file: {log_file}")
+    
+    # Clean up any leftover files from previous runs
+    cleanup_temp_files()
+    
     print("Server will be available at: http://localhost:5000")
+    print("Note: Files are securely deleted after analysis")
     app.run(host='0.0.0.0', port=5000, debug=True)
