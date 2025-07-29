@@ -1,0 +1,174 @@
+from flask import Flask, request, jsonify, render_template
+import os
+import json
+import tempfile
+import logging
+from werkzeug.utils import secure_filename
+from pdfid import PDFiD, PDFiD2JSON
+import uuid
+from datetime import datetime
+
+app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+
+# Lokalne ścieżki - dostosowane do środowiska bez Dockera
+if os.name == 'nt':  # Windows
+    app.config['UPLOAD_FOLDER'] = os.path.join(os.getcwd(), 'temp_uploads')
+    log_file = os.path.join(os.getcwd(), 'logs', 'pdf_analyzer.log')
+else:  # Linux/Mac
+    app.config['UPLOAD_FOLDER'] = os.path.join(os.getcwd(), 'temp_uploads')
+    log_file = os.path.join(os.getcwd(), 'logs', 'pdf_analyzer.log')
+
+# Ensure directories exist
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+os.makedirs(os.path.dirname(log_file), exist_ok=True)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_file),
+        logging.StreamHandler()
+    ]
+)
+
+ALLOWED_EXTENSIONS = {'pdf'}
+DANGER_KEYWORDS = ['/JS', '/JavaScript', '/AA', '/OpenAction', '/Launch', '/EmbeddedFile']
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def analyze_pdf_safety(file_path):
+    """Analyze PDF and return safety assessment"""
+    try:
+        xmlDoc = PDFiD(file_path, allNames=False, extraData=True, disarm=False, force=False)
+        
+        # Convert to JSON for easier processing
+        json_result = PDFiD2JSON(xmlDoc, False)
+        data = json.loads(json_result)[0]['pdfid']
+        
+        # Safety assessment logic
+        risk_score = 0
+        warnings = []
+        
+        # Check for dangerous elements
+        for keyword in data['keywords']['keyword']:
+            name = keyword['name']
+            count = keyword['count']
+            
+            if name in DANGER_KEYWORDS and count > 0:
+                risk_score += count * 10
+                warnings.append(f"Contains {count} instances of {name}")
+        
+        # Check for encryption
+        encrypt_count = next((k['count'] for k in data['keywords']['keyword'] if k['name'] == '/Encrypt'), 0)
+        if encrypt_count > 0:
+            risk_score += 5
+            warnings.append("PDF is encrypted")
+        
+        # Check for suspicious object counts
+        obj_count = next((k['count'] for k in data['keywords']['keyword'] if k['name'] == 'obj'), 0)
+        if obj_count > 1000:
+            risk_score += 5
+            warnings.append(f"High number of objects: {obj_count}")
+        
+        # Determine safety level
+        if risk_score == 0:
+            safety_level = "SAFE"
+        elif risk_score <= 10:
+            safety_level = "LOW_RISK"
+        elif risk_score <= 50:
+            safety_level = "MEDIUM_RISK"
+        else:
+            safety_level = "HIGH_RISK"
+        
+        return {
+            'is_pdf': data['isPdf'] == 'True',
+            'safety_level': safety_level,
+            'risk_score': risk_score,
+            'warnings': warnings,
+            'header': data['header'],
+            'keywords': data['keywords']['keyword'],
+            'analysis_complete': True,
+            'error': None
+        }
+        
+    except Exception as e:
+        logging.error(f"Error analyzing PDF: {str(e)}")
+        return {
+            'is_pdf': False,
+            'safety_level': 'ERROR',
+            'risk_score': -1,
+            'warnings': ['Analysis failed'],
+            'analysis_complete': False,
+            'error': str(e)
+        }
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/api/analyze', methods=['POST'])
+def analyze_pdf():
+    """Main endpoint for PDF analysis"""
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No file selected'}), 400
+    
+    if not allowed_file(file.filename):
+        return jsonify({'error': 'Only PDF files are allowed'}), 400
+    
+    # Generate unique filename
+    unique_id = str(uuid.uuid4())
+    filename = secure_filename(file.filename)
+    temp_filename = f"{unique_id}_{filename}"
+    file_path = os.path.join(app.config['UPLOAD_FOLDER'], temp_filename)
+    
+    try:
+        # Save uploaded file
+        file.save(file_path)
+        logging.info(f"Analyzing file: {filename} (ID: {unique_id})")
+        
+        # Analyze PDF
+        result = analyze_pdf_safety(file_path)
+        result['filename'] = filename
+        result['analysis_id'] = unique_id
+        result['timestamp'] = datetime.now().isoformat()
+        
+        # Log result
+        logging.info(f"Analysis complete for {filename}: {result['safety_level']}")
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logging.error(f"Error processing file {filename}: {str(e)}")
+        return jsonify({'error': 'File processing failed'}), 500
+        
+    finally:
+        # Clean up uploaded file
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception as e:
+            logging.warning(f"Failed to clean up file {file_path}: {str(e)}")
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'version': '1.0.0'
+    })
+
+# Development server configuration
+if __name__ == '__main__':
+    print("Starting PDF Analyzer Server...")
+    print(f"Upload folder: {app.config['UPLOAD_FOLDER']}")
+    print(f"Log file: {log_file}")
+    print("Server will be available at: http://localhost:5000")
+    app.run(host='0.0.0.0', port=5000, debug=True)

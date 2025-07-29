@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  pdf-analyzer:
+    build: .
+    container_name: pdf-analyzer
+    restart: unless-stopped
+    environment:
+      - FLASK_ENV=production
+    volumes:
+      - ./logs:/var/log
+    networks:
+      - pdf-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  nginx:
+    image: nginx:alpine
+    container_name: pdf-analyzer-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./logs:/var/log/nginx
+    depends_on:
+      - pdf-analyzer
+    networks:
+      - pdf-network
+
+networks:
+  pdf-network:
+    driver: bridge
+
+volumes:
+  logs:
