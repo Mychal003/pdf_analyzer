@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analizator Bezpieczeństwa PDF</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+        .upload-box {
+            border: 2px dashed #ccc;
+            padding: 40px;
+            text-align: center;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        .upload-box:hover {
+            border-color: #007bff;
+            background-color: #f8f9fa;
+        }
+        .btn {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .btn:hover {
+            background-color: #0056b3;
+        }
+        .result {
+            margin: 20px 0;
+            padding: 15px;
+            border-radius: 5px;
+            display: none;
+        }
+        .safe {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .warning {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        .danger {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .loading {
+            text-align: center;
+            display: none;
+            margin: 20px 0;
+        }
+        .contact-info {
+            background-color: #e9f7ef;
+            border: 1px solid #a7d2a7;
+            padding: 15px;
+            margin-top: 15px;
+            border-radius: 5px;
+            text-align: center;
+        }
+        .contact-warning {
+            background-color: #fff3cd;
+            border: 1px solid #ffeaa7;
+            color: #856404;
+        }
+        .contact-danger {
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        .email-link {
+            color: #007bff;
+            text-decoration: none;
+            font-weight: bold;
+        }
+        .email-link:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Analizator Bezpieczeństwa PDF</h1>
+        
+        <div class="upload-box" onclick="document.getElementById('fileInput').click()">
+            <p>Kliknij tutaj, aby wybrać plik PDF</p>
+            <button class="btn">Wybierz plik</button>
+            <input type="file" id="fileInput" accept=".pdf" style="display: none;">
+        </div>
+        
+        <div id="loading" class="loading">
+            <p>Analizowanie pliku PDF...</p>
+        </div>
+        
+        <div id="result" class="result"></div>
+    </div>
+
+    <script>
+        document.getElementById('fileInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                analyzePDF(file);
+            }
+        });
+
+        function analyzePDF(file) {
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('result').style.display = 'none';
+            
+            fetch('/api/analyze', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('loading').style.display = 'none';
+                showResult(data);
+            })
+            .catch(error => {
+                document.getElementById('loading').style.display = 'none';
+                showError('Błąd: ' + error.message);
+            });
+        }
+
+        function showResult(data) {
+            const resultDiv = document.getElementById('result');
+            
+            if (data.error) {
+                showError(data.error);
+                return;
+            }
+
+            let className = 'safe';
+            let safetyLevelText = '';
+            let contactInfo = '';
+            
+            if (data.safety_level === 'SAFE') {
+                safetyLevelText = 'BEZPIECZNY';
+            } else if (data.safety_level === 'LOW_RISK') {
+                className = 'warning';
+                safetyLevelText = 'NISKIE RYZYKO';
+                contactInfo = `
+                    <div class="contact-info contact-warning">
+                        <strong>⚠️ Wykryto potencjalne zagrożenie</strong><br>
+                        Skonsultuj się z ekspertem: 
+                        <a href="mailto:ui@sonel.pl" class="email-link">ui@sonel.pl</a>
+                    </div>
+                `;
+            } else if (data.safety_level === 'MEDIUM_RISK') {
+                className = 'warning';
+                safetyLevelText = 'ŚREDNIE RYZYKO';
+                contactInfo = `
+                    <div class="contact-info contact-warning">
+                        <strong>⚠️ Wykryto zagrożenie</strong><br>
+                        Skonsultuj się z ekspertem: 
+                        <a href="mailto:ui@sonel.pl" class="email-link">ui@sonel.pl</a>
+                    </div>
+                `;
+            } else if (data.safety_level === 'HIGH_RISK') {
+                className = 'danger';
+                safetyLevelText = 'WYSOKIE RYZYKO';
+                contactInfo = `
+                    <div class="contact-info contact-danger">
+                        <strong>🚨 UWAGA! Wykryto wysokie zagrożenie</strong><br>
+                        Natychmiast skonsultuj się z ekspertem: 
+                        <a href="mailto:ui@sonel.pl" class="email-link">ui@sonel.pl</a>
+                    </div>
+                `;
+            }
+
+            let warningsText = '';
+            if (data.warnings && data.warnings.length > 0) {
+                warningsText = '<br><strong>Ostrzeżenia:</strong><br>' + data.warnings.join('<br>');
+            }
+
+            resultDiv.className = 'result ' + className;
+            resultDiv.innerHTML = `
+                <h3>Wynik analizy</h3>
+                <p><strong>Plik:</strong> ${data.filename}</p>
+                <p><strong>Poziom bezpieczeństwa:</strong> ${safetyLevelText}</p>
+                <p><strong>Punkty ryzyka:</strong> ${data.risk_score}</p>
+                ${warningsText}
+                ${contactInfo}
+            `;
+            resultDiv.style.display = 'block';
+        }
+
+        function showError(message) {
+            const resultDiv = document.getElementById('result');
+            resultDiv.className = 'result danger';
+            resultDiv.innerHTML = `
+                <h3>Błąd</h3>
+                <p>${message}</p>
+                <div class="contact-info contact-danger">
+                    <strong>Problemy z analizą?</strong><br>
+                    Skontaktuj się z: 
+                    <a href="mailto:ui@sonel.pl" class="email-link">ui@sonel.pl</a>
+                </div>
+            `;
+            resultDiv.style.display = 'block';
+        }
+    </script>
+</body>
+</html>
