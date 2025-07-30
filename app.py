@@ -35,6 +35,20 @@ logging.basicConfig(
 ALLOWED_EXTENSIONS = {'pdf'}
 DANGER_KEYWORDS = ['/JS', '/JavaScript', '/AA', '/OpenAction', '/Launch', '/EmbeddedFile']
 
+TRANSLATIONS = {
+    'No file provided': 'Nie przesłano pliku',
+    'No file selected': 'Nie wybrano pliku',
+    'Only PDF files are allowed': 'Dozwolone są tylko pliki PDF',
+    'File processing failed': 'Przetwarzanie pliku nie powiodło się',
+    'Analysis failed': 'Analiza nie powiodła się',
+    'PDF is encrypted': 'PDF jest zaszyfrowany',
+    'High number of objects': 'Duża liczba obiektów'
+}
+
+def translate_message(message):
+    """Translate message to Polish"""
+    return TRANSLATIONS.get(message, message)
+
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
@@ -103,26 +117,26 @@ def analyze_pdf_safety(file_path):
             
             if name in DANGER_KEYWORDS and count > 0:
                 risk_score += count * 10
-                warnings.append(f"Contains {count} instances of {name}")
+                warnings.append(f"Zawiera {count} wystąpień {name}")
         
         # Check for encryption
         encrypt_count = next((k['count'] for k in data['keywords']['keyword'] if k['name'] == '/Encrypt'), 0)
         if encrypt_count > 0:
             risk_score += 5
-            warnings.append("PDF is encrypted")
+            warnings.append("PDF jest zaszyfrowany")
         
         # Check for suspicious object counts
         obj_count = next((k['count'] for k in data['keywords']['keyword'] if k['name'] == 'obj'), 0)
         if obj_count > 1000:
             risk_score += 5
-            warnings.append(f"High number of objects: {obj_count}")
+            warnings.append(f"Duża liczba obiektów: {obj_count}")
         
         # Determine safety level
         if risk_score == 0:
             safety_level = "SAFE"
         elif risk_score <= 10:
             safety_level = "LOW_RISK"
-        elif risk_score <= 50:
+        elif risk_score <= 40:
             safety_level = "MEDIUM_RISK"
         else:
             safety_level = "HIGH_RISK"
@@ -144,7 +158,7 @@ def analyze_pdf_safety(file_path):
             'is_pdf': False,
             'safety_level': 'ERROR',
             'risk_score': -1,
-            'warnings': ['Analysis failed'],
+            'warnings': ['Analiza nie powiodła się'],
             'analysis_complete': False,
             'error': str(e)
         }
@@ -157,14 +171,14 @@ def index():
 def analyze_pdf():
     """Main endpoint for PDF analysis"""
     if 'file' not in request.files:
-        return jsonify({'error': 'No file provided'}), 400
+        return jsonify({'error': translate_message('No file provided')}), 400
     
     file = request.files['file']
     if file.filename == '':
-        return jsonify({'error': 'No file selected'}), 400
+        return jsonify({'error': translate_message('No file selected')}), 400
     
     if not allowed_file(file.filename):
-        return jsonify({'error': 'Only PDF files are allowed'}), 400
+        return jsonify({'error': translate_message('Only PDF files are allowed')}), 400
     
     # Generate unique filename
     unique_id = str(uuid.uuid4())
@@ -190,7 +204,7 @@ def analyze_pdf():
         
     except Exception as e:
         logging.error(f"Error processing file {filename}: {str(e)}")
-        return jsonify({'error': 'File processing failed'}), 500
+        return jsonify({'error': translate_message('File processing failed')}), 500
         
     finally:
         # CRITICAL: Securely delete the uploaded file immediately after analysis
