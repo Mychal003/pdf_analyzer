@@ -7,9 +7,34 @@ from werkzeug.utils import secure_filename
 from pdfid import PDFiD, PDFiD2JSON
 import uuid
 from datetime import datetime
+from flask import Flask, request, jsonify, render_template
+from flask_talisman import Talisman
+
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+
+Talisman(app, 
+    force_https=False,  # Set to True in production with HTTPS
+    strict_transport_security=False,  # Enable in production with HTTPS
+    content_security_policy={
+        'default-src': "'self'",
+        'script-src': "'self' 'unsafe-inline'",
+        'style-src': "'self' 'unsafe-inline'",
+        'img-src': "'self' data:",
+        'font-src': "'self'",
+        'connect-src': "'self'",
+        'frame-ancestors': "'none'",
+        'base-uri': "'self'",
+        'form-action': "'self'"
+    },
+    feature_policy={
+        'geolocation': "'none'",
+        'camera': "'none'",
+        'microphone': "'none'"
+    }
+)
+
 
 if os.name == 'nt':  # Windows
     app.config['UPLOAD_FOLDER'] = os.path.join(os.getcwd(), 'temp_uploads')
