@@ -28,10 +28,18 @@
             text-align: center;
             margin: 20px 0;
             border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.3s ease;
         }
         .upload-box:hover {
             border-color: #007bff;
             background-color: #f8f9fa;
+        }
+        /* Style dla drag & drop */
+        .upload-box.drag-over {
+            border-color: #28a745;
+            background-color: #d4edda;
+            transform: scale(1.02);
         }
         .btn {
             background-color: #007bff;
@@ -103,9 +111,9 @@
     <div class="container">
         <h1>Analizator Bezpieczeństwa PDF</h1>
         
-        <div class="upload-box" onclick="document.getElementById('fileInput').click()">
-            <p>Kliknij tutaj, aby wybrać plik PDF</p>
-            <button class="btn">Wybierz plik</button>
+        <div class="upload-box" id="uploadBox">
+            <p>Kliknij tutaj lub przeciągnij plik PDF</p>
+            <button class="btn" type="button" onclick="document.getElementById('fileInput').click()">Wybierz plik</button>
             <input type="file" id="fileInput" accept=".pdf" style="display: none;">
         </div>
         
@@ -117,11 +125,60 @@
     </div>
 
     <script>
-        document.getElementById('fileInput').addEventListener('change', function(e) {
+        const uploadBox = document.getElementById('uploadBox');
+        const fileInput = document.getElementById('fileInput');
+
+        // Obsługa kliknięcia w upload box
+        uploadBox.addEventListener('click', function() {
+            fileInput.click();
+        });
+
+        // Obsługa wyboru pliku przez input
+        fileInput.addEventListener('change', function(e) {
             const file = e.target.files[0];
             if (file) {
                 analyzePDF(file);
             }
+        });
+
+        // DRAG & DROP obsługa
+        uploadBox.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            uploadBox.classList.add('drag-over');
+        });
+
+        uploadBox.addEventListener('dragleave', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            uploadBox.classList.remove('drag-over');
+        });
+
+        uploadBox.addEventListener('drop', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            uploadBox.classList.remove('drag-over');
+            
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                const file = files[0];
+                
+                // Sprawdź czy to PDF
+                if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+                    analyzePDF(file);
+                } else {
+                    showError('Dozwolone są tylko pliki PDF');
+                }
+            }
+        });
+
+        // Zapobiegaj defaultowej obsłudze drag & drop w całym dokumencie
+        document.addEventListener('dragover', function(e) {
+            e.preventDefault();
+        });
+
+        document.addEventListener('drop', function(e) {
+            e.preventDefault();
         });
 
         function analyzePDF(file) {
