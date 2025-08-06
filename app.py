@@ -11,6 +11,9 @@ from flask import Flask, request, jsonify, render_template
 from flask_talisman import Talisman
 import fitz  # PyMuPDF
 import re
+import base64
+from io import BytesIO
+from PIL import Image
 
 
 app = Flask(__name__)
@@ -23,6 +26,7 @@ Talisman(app,
         'default-src': "'self'",
         'script-src': "'self' 'unsafe-inline'",
         'style-src': "'self' 'unsafe-inline'",
+        'img-src': "'self' data:", # Dodajemy obsługę data URI dla obrazów
     },
 )
 
@@ -116,24 +120,45 @@ def secure_delete_file(file_path):
 def extract_links_from_pdf(file_path):
     """Extract links from PDF and analyze them for potential risks"""
     links = []
+    seen_links = set()  # Zbiór do śledzenia już widzianych linków
     suspicious_domains = [
         'bit.ly', 'tinyurl.com', 'goo.gl', 't.co', 'is.gd', 'ow.ly', 'rebrand.ly',
-        'tiny.cc', 'tr.im', 'cutt.ly', 'shorturl.at', 'rb.gy', 'soo.gd'
+        'tiny.cc', 'tr.im', 'cutt.ly', 'shorturl.at', 'rb.gy', 'soo.gd', 'sprl.in'
     ]
+    
+    # Wzorce wyrażeń regularnych do znajdowania URLi w tekście
+    url_pattern = r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+(?:/[-\w%!./?=&+#]*)*'
+    # Wzorzec do znajdowania URLi które mogą być przerwane przez znak nowej linii
+    broken_url_pattern = r'(https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+)[-\w%!./?=&+#]*(?:\n|\r\n|\r)[-\w%!./?=&+#]*'
     
     try:
         doc = fitz.open(file_path)
+        
+        # 1. Najpierw zbieramy aktywne hiperłącza
         for page_num in range(len(doc)):
             page = doc[page_num]
             page_links = page.get_links()
+            page_seen_links = set()  # Zbiór do śledzenia linków na danej stronie
             
             for link in page_links:
                 if 'uri' in link:
                     url = link['uri']
+                    
+                    # Unikaj duplikatów linków na tej samej stronie
+                    link_key = f"{url}_{page_num}"
+                    if link_key in page_seen_links:
+                        continue
+                    
+                    page_seen_links.add(link_key)
+                    
+                    # Sprawdź, czy ten link już widzieliśmy na wcześniejszych stronach
+                    # Jeśli tak, aktualizujemy informację o stronie zamiast dodawać duplikat
+                    existing_link_idx = next((i for i, l in enumerate(links) if l['url'] == url), None)
+                    
                     is_suspicious = False
                     reason = []
                     
-                    # Check for URL shorteners
+                    # Check for URL shorteners and other suspicious patterns
                     for domain in suspicious_domains:
                         if domain in url.lower():
                             is_suspicious = True
@@ -158,12 +183,108 @@ def extract_links_from_pdf(file_path):
                         is_suspicious = True
                         reason.append("adres IP zamiast domeny")
                     
+                    if existing_link_idx is not None:
+                        # Jeśli link już istnieje, dodajemy informację o stronie
+                        existing_link = links[existing_link_idx]
+                        if page_num + 1 not in existing_link['pages']:
+                            existing_link['pages'].append(page_num + 1)
+                    else:
+                        # Dodajemy nowy link
+                        links.append({
+                            'url': url,
+                            'pages': [page_num + 1],  # Lista stron, na których występuje link
+                            'page': page_num + 1,     # Zachowujemy kompatybilność ze starym formatem
+                            'source': 'hyperlink',    # Oznaczamy źródło linku
+                            'suspicious': is_suspicious,
+                            'reason': ", ".join(reason) if reason else None
+                        })
+        
+        # 2. Teraz szukamy URLi w tekście dokumentu
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            text = page.get_text()
+            
+            # Znajdź wszystkie URLe w tekście
+            urls = re.findall(url_pattern, text)
+            
+            # Szukaj też URLi przedzielonych znakiem nowej linii
+            broken_url_matches = re.finditer(broken_url_pattern, text)
+            for match in broken_url_matches:
+                # Pobierz linię, która zawiera początek URLa
+                line_start = text.rfind('\n', 0, match.start()) + 1
+                if line_start == 0:  # Jeśli nie znaleziono znaku nowej linii przed URLem
+                    line_start = 0
+                
+                # Pobierz linię, która zawiera koniec URLa
+                line_end = text.find('\n', match.end())
+                if line_end == -1:  # Jeśli nie znaleziono znaku nowej linii po URLu
+                    line_end = len(text)
+                
+                # Złącz obie linie i usuń znak nowej linii
+                context = text[line_start:line_end].replace('\n', '')
+                
+                # Spróbuj znaleźć pełny URL w kontekście
+                potential_url = re.search(url_pattern, context)
+                if potential_url:
+                    urls.append(potential_url.group(0))
+            
+            # Przetwórz znalezione URLe
+            for url in urls:
+                # Sprawdź, czy już dodaliśmy ten URL
+                if url in seen_links:
+                    # Znajdź istniejący URL i dodaj informację o tej stronie
+                    existing_link_idx = next((i for i, l in enumerate(links) if l['url'] == url), None)
+                    if existing_link_idx is not None and page_num + 1 not in links[existing_link_idx]['pages']:
+                        links[existing_link_idx]['pages'].append(page_num + 1)
+                    continue
+                
+                seen_links.add(url)
+                
+                # Sprawdzanie czy URL jest podejrzany
+                is_suspicious = False
+                reason = []
+                
+                # Check for URL shorteners
+                for domain in suspicious_domains:
+                    if domain in url.lower():
+                        is_suspicious = True
+                        reason.append("skrócony URL")
+                        break
+                
+                # Check for non-HTTPS
+                if url.startswith('http://'):
+                    is_suspicious = True
+                    reason.append("nieszyfrowane połączenie")
+                
+                # Check for unusual TLDs
+                unusual_tlds = ['.xyz', '.top', '.club', '.tk', '.ml', '.ga', '.cf']
+                for tld in unusual_tlds:
+                    if url.lower().endswith(tld):
+                        is_suspicious = True
+                        reason.append(f"nietypowa domena {tld}")
+                        break
+                
+                # Check for IP addresses in URLs
+                if re.search(r'https?://\d+\.\d+\.\d+\.\d+', url):
+                    is_suspicious = True
+                    reason.append("adres IP zamiast domeny")
+                
+                # Sprawdź, czy link nie jest już na liście (jako aktywny hiperlink)
+                existing_link_idx = next((i for i, l in enumerate(links) if l['url'] == url), None)
+                if existing_link_idx is None:
+                    # Dodaj nowy link z tekstu
                     links.append({
                         'url': url,
+                        'pages': [page_num + 1],
                         'page': page_num + 1,
+                        'source': 'text',  # Oznaczamy, że link został znaleziony w tekście
                         'suspicious': is_suspicious,
                         'reason': ", ".join(reason) if reason else None
                     })
+                else:
+                    # Aktualizuj istniejący link o informację o tej stronie
+                    if page_num + 1 not in links[existing_link_idx]['pages']:
+                        links[existing_link_idx]['pages'].append(page_num + 1)
         
         return links
     
@@ -249,11 +370,23 @@ def analyze_pdf_safety(file_path):
             warnings.append(f"Duża liczba obiektów: {obj_count}")
             content_binary['large_objects'] = 1
         
-        # Traktuj wszystkie pliki PDF z linkami jako niebezpieczne
+        # Złagodzona ocena dla plików z linkami
         if len(links) > 0:
-            # Dodaj co najmniej 15 punktów ryzyka za obecność linków
-            risk_score += max(15, len(links) * 3)
-            warnings.append(f"Wykryto {len(links)} linków - każdy link może stanowić zagrożenie bezpieczeństwa!")
+            # Znacznie mniejsza waga dla samych linków - maksymalnie 5 punktów bazowych plus 0.5 za każdy link
+            base_risk = min(5, len(links))
+            per_link_risk = 0.5
+            suspicious_risk = 1  # Dodatkowe punkty za podejrzane linki, ale mniej niż wcześniej
+            
+            link_risk_score = base_risk + (len(links) * per_link_risk) + (suspicious_links_count * suspicious_risk)
+            # Ogranicz maksymalne ryzyko za linki
+            link_risk_score = min(link_risk_score, 15)
+            
+            risk_score += link_risk_score
+            
+            if suspicious_links_count > 0:
+                warnings.append(f"Wykryto {len(links)} linków, w tym {suspicious_links_count} podejrzanych.")
+            else:
+                warnings.append(f"Wykryto {len(links)} linków - zachowaj ostrożność przy ich otwieraniu.")
         
         # Convert binary analysis to string
         binary_string = ''.join([
@@ -271,13 +404,17 @@ def analyze_pdf_safety(file_path):
         binary_int = int(binary_string, 2) if binary_string != '00000000' else 0
         error_code = f"PDF-{binary_int:03d}"
         
-        # Determine safety level
+        # Determine safety level - łagodniejsza klasyfikacja dla plików z linkami
         if len(links) > 0:
-            # Każdy PDF z linkami jest co najmniej MEDIUM_RISK
-            if risk_score <= 20:
-                safety_level = "MEDIUM_RISK"
-            else:
+            # Sama obecność linków nie powoduje już wysokiego ryzyka
+            if suspicious_links_count > 5 or risk_score > 40:
                 safety_level = "HIGH_RISK"
+            elif suspicious_links_count > 2 or risk_score > 20:
+                safety_level = "MEDIUM_RISK"
+            elif suspicious_links_count > 0 or risk_score > 10:
+                safety_level = "LOW_RISK"
+            else:
+                safety_level = "SAFE"  # PDF tylko z bezpiecznymi linkami może być bezpieczny
         else:
             if risk_score == 0:
                 safety_level = "SAFE"
@@ -288,9 +425,43 @@ def analyze_pdf_safety(file_path):
             else:
                 safety_level = "HIGH_RISK"
         
-        # Always add link warning for all PDFs
-        if len(links) > 0:
-            warnings.append("UWAGA: PDF zawiera linki które mogą prowadzić do niebezpiecznych stron!")
+        # Łagodniejsze ostrzeżenie
+        if len(links) > 0 and safety_level != "HIGH_RISK":
+            warnings.append("Dokument zawiera linki - sprawdź je przed kliknięciem.")
+        
+        # Określ, czy PDF jest bezpieczny do podglądu
+        preview_safe = True
+        preview_unsafe_reasons = []
+        
+        # Sprawdź niebezpieczne elementy - tylko konkretne elementy blokują podgląd, nie ogólny poziom ryzyka
+        if content_binary['javascript'] == 1:
+            preview_safe = False
+            preview_unsafe_reasons.append("Zawiera JavaScript")
+        
+        if content_binary['actions'] == 1:
+            preview_safe = False
+            preview_unsafe_reasons.append("Zawiera akcje automatyczne")
+        
+        if content_binary['launch'] == 1:
+            preview_safe = False
+            preview_unsafe_reasons.append("Zawiera akcje uruchamiania")
+        
+        if content_binary['embedded'] == 1:
+            preview_safe = False
+            preview_unsafe_reasons.append("Zawiera osadzone pliki")
+            
+        if content_binary['xfa'] == 1:
+            preview_safe = False
+            preview_unsafe_reasons.append("Zawiera formularze XFA")
+        
+        # Nie blokujemy już podglądu tylko na podstawie poziomu ryzyka
+        # Usuwamy poniższy kod:
+        # if safety_level == "HIGH_RISK":
+        #     preview_safe = False
+        #     if not preview_unsafe_reasons:
+        #         preview_unsafe_reasons.append("Wysoki poziom ryzyka")
+        
+        # Sama obecność linków NIE blokuje podglądu
         
         return {
             'is_pdf': data['isPdf'] == 'True',
@@ -306,7 +477,9 @@ def analyze_pdf_safety(file_path):
             'error': None,
             'links': links,
             'links_count': len(links),
-            'suspicious_links_count': suspicious_links_count
+            'suspicious_links_count': suspicious_links_count,
+            'preview_safe': preview_safe,
+            'preview_unsafe_reasons': preview_unsafe_reasons
         }
         
     except Exception as e:
@@ -322,9 +495,56 @@ def analyze_pdf_safety(file_path):
             'error': str(e),
             'links': [],
             'links_count': 0,
-            'suspicious_links_count': 0
+            'suspicious_links_count': 0,
+            'preview_safe': False,
+            'preview_unsafe_reasons': ['Analiza nie powiodła się']
         }
 
+# Poprawmy funkcję generowania podglądu, aby obsługiwała błędy i poprawnie zamykała plik
+def generate_pdf_preview(file_path, max_pages=3):
+    """Generuje podgląd PDF jako listę zakodowanych obrazów w base64"""
+    images = []
+    doc = None
+    try:
+        # Sprawdź czy plik istnieje
+        if not os.path.exists(file_path):
+            return {'success': False, 'error': 'Nie znaleziono pliku'}
+            
+        doc = fitz.open(file_path)
+        total_pages = min(max_pages, len(doc))
+        
+        for page_num in range(total_pages):
+            page = doc[page_num]
+            # Renderuj stronę jako obraz (zwiększony zoom dla lepszej jakości)
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+            
+            # Konwersja do formatu PNG
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            img_buffer = BytesIO()
+            img.save(img_buffer, format="PNG")
+            img_buffer.seek(0)
+            
+            # Kodowanie do base64
+            img_str = base64.b64encode(img_buffer.read()).decode('utf-8')
+            images.append({
+                'data': f'data:image/png;base64,{img_str}',
+                'page': page_num + 1,
+                'width': pix.width,
+                'height': pix.height
+            })
+        
+        return {'success': True, 'images': images, 'total_pages': len(doc)}
+    
+    except Exception as e:
+        logging.error(f"Error generating PDF preview: {str(e)}")
+        return {'success': False, 'error': str(e)}
+    finally:
+        # Upewnij się, że dokument zostanie zamknięty
+        if doc:
+            try:
+                doc.close()
+            except:
+                pass
 
 @app.route('/')
 def index():
@@ -374,6 +594,61 @@ def analyze_pdf():
         if os.path.exists(file_path):
             secure_delete_file(file_path)
             logging.info(f"Uploaded file securely removed: {temp_filename}")
+
+@app.route('/api/pdf-preview', methods=['POST'])
+def pdf_preview():
+    """Endpoint do generowania podglądu PDF"""
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'error': translate_message('No file provided')}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'success': False, 'error': translate_message('No file selected')}), 400
+    
+    if not allowed_file(file.filename):
+        return jsonify({'success': False, 'error': translate_message('Only PDF files are allowed')}), 400
+    
+    # Generate unique filename
+    unique_id = str(uuid.uuid4())
+    filename = secure_filename(file.filename)
+    temp_filename = f"{unique_id}_preview_{filename}"
+    file_path = os.path.join(app.config['UPLOAD_FOLDER'], temp_filename)
+    
+    try:
+        # Save uploaded file
+        file.save(file_path)
+        logging.info(f"Generating preview for: {filename} (ID: {unique_id})")
+        
+        # Najpierw sprawdź bezpieczeństwo pliku
+        safety_check = analyze_pdf_safety(file_path)
+        
+        # Jeśli plik nie jest bezpieczny do podglądu, zwróć błąd
+        if not safety_check['preview_safe']:
+            reasons = ", ".join(safety_check['preview_unsafe_reasons'])
+            return jsonify({
+                'success': False, 
+                'error': f'Podgląd niedostępny ze względów bezpieczeństwa: {reasons}',
+                'safety_level': safety_check['safety_level'],
+                'unsafe_reasons': safety_check['preview_unsafe_reasons']
+            }), 403
+        
+        # Jeśli plik jest bezpieczny, generuj podgląd
+        preview_result = generate_pdf_preview(file_path, max_pages=3)
+        
+        if preview_result['success']:
+            return jsonify(preview_result)
+        else:
+            return jsonify({'success': False, 'error': 'Nie udało się wygenerować podglądu: ' + preview_result.get('error', 'Nieznany błąd')}), 500
+        
+    except Exception as e:
+        logging.error(f"Error processing preview for {filename}: {str(e)}")
+        return jsonify({'success': False, 'error': translate_message('File processing failed') + f": {str(e)}"}), 500
+        
+    finally:
+        # CRITICAL: Securely delete the uploaded file immediately after processing
+        if os.path.exists(file_path):
+            secure_delete_file(file_path)
+            logging.info(f"Preview file securely removed: {temp_filename}")
 
 @app.route('/api/health', methods=['GET'])
 def health_check():

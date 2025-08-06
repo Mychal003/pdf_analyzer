@@ -7,7 +7,7 @@
     <style>
         body {
             font-family: Arial, sans-serif;
-            max-width: 600px;
+            max-width: 1000px; /* Zwiększona szerokość dla dwukolumnowego układu */
             margin: 50px auto;
             padding: 20px;
             background-color: #f5f5f5;
@@ -53,12 +53,32 @@
         .btn:hover {
             background-color: #0056b3;
         }
+        
+        /* Nowy układ dwukolumnowy */
+        .results-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            margin-top: 20px;
+        }
+        
+        .result-column {
+            flex: 1;
+            min-width: 300px;
+        }
+        
+        .preview-column {
+            flex: 1;
+            min-width: 300px;
+        }
+        
         .result {
-            margin: 20px 0;
+            margin: 0;
             padding: 15px;
             border-radius: 5px;
             display: none;
         }
+        
         .safe {
             background-color: #d4edda;
             color: #155724;
@@ -129,8 +149,8 @@
             margin-bottom: 5px;
             border-bottom: 1px solid #f1f1f1;
             word-break: break-all;
-            color: #dc3545; /* Wszystkie linki są teraz czerwone */
-            font-weight: bold;
+            color: #495057; /* Neutralny kolor zamiast czerwonego dla standardowych linków */
+            font-weight: normal; /* Nie wszystkie linki pogrubione */
         }
         
         .link-item:last-child {
@@ -138,36 +158,87 @@
         }
         
         .suspicious-link {
-            background-color: #f8d7da;
+            background-color: #fff3cd; /* Żółte tło zamiast czerwonego */
+            border-left: 3px solid #ffc107;
+            padding-left: 8px;
+            color: #856404; /* Kolor tekstu dla ostrzeżeń */
+            font-weight: bold;
+        }
+        
+        .dangerous-link {
+            background-color: #f8d7da; /* Czerwone tło tylko dla naprawdę niebezpiecznych */
             border-left: 3px solid #dc3545;
             padding-left: 8px;
-        }
-        
-        .link-reason {
-            font-size: 0.85em;
             color: #721c24;
-            margin-top: 2px;
-        }
-        
-        .link-page {
-            font-size: 0.8em;
-            color: #6c757d;
-            margin-left: 5px;
+            font-weight: bold;
         }
         
         .links-warning {
-            background-color: #f8d7da;
-            color: #721c24;
+            background-color: #e2e3e5; /* Neutralny kolor tła */
+            color: #383d41; /* Neutralny kolor tekstu */
             padding: 8px;
             border-radius: 4px;
             margin-bottom: 10px;
-            font-weight: bold;
-            border: 1px solid #f5c6cb;
+            font-weight: normal;
+            border: 1px solid #d6d8db;
         }
         
-        .no-links {
-            font-style: italic;
-            color: #6c757d;
+        .pdf-preview {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+            padding: 10px;
+            height: 100%;
+            display: none;
+        }
+        
+        .pdf-preview-pages {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 15px;
+            margin-top: 10px;
+            overflow-y: auto;
+            max-height: 600px;
+        }
+        
+        .pdf-page {
+            max-width: 100%;
+            border: 1px solid #dee2e6;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        
+        .preview-warning {
+            background-color: #e2e3e5;
+            color: #383d41;
+            padding: 8px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            font-size: 0.9em;
+            border: 1px solid #d6d8db;
+        }
+        
+        .preview-button {
+            margin-top: 10px;
+            background-color: #6c757d;
+            color: white;
+            width: 100%;
+        }
+        
+        .preview-button:hover {
+            background-color: #5a6268;
+        }
+        
+        /* Responsywność dla mniejszych ekranów */
+        @media (max-width: 768px) {
+            .results-container {
+                flex-direction: column;
+            }
+            
+            body {
+                max-width: 100%;
+                padding: 10px;
+            }
         }
     </style>
 </head>
@@ -185,12 +256,31 @@
             <p>Analizowanie pliku PDF...</p>
         </div>
         
-        <div id="result" class="result"></div>
+        <!-- Nowy kontener dla wyników i podglądu -->
+        <div class="results-container" id="resultsContainer" style="display: none;">
+            <div class="result-column">
+                <div id="result" class="result"></div>
+            </div>
+            <div class="preview-column">
+                <button class="btn preview-button" id="previewButton" type="button" onclick="showPDFPreview()" style="display: none;">
+                    Pokaż podgląd dokumentu (pierwsze 3 strony)
+                </button>
+                <div id="pdfPreview" class="pdf-preview">
+                    <div class="preview-warning">
+                        <strong>ℹ️ Uwaga:</strong> Podgląd pokazuje tylko pierwsze 3 strony dokumentu 
+                        jako statyczne obrazy. Interaktywne elementy nie są aktywne.
+                    </div>
+                    <div id="pdfPreviewPages" class="pdf-preview-pages"></div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
         const uploadBox = document.getElementById('uploadBox');
         const fileInput = document.getElementById('fileInput');
+        const resultsContainer = document.getElementById('resultsContainer');
+        const previewButton = document.getElementById('previewButton');
 
         // Obsługa kliknięcia w upload box
         uploadBox.addEventListener('click', function(e) {
@@ -263,7 +353,19 @@
             formData.append('file', file);
             
             document.getElementById('loading').style.display = 'block';
-            document.getElementById('result').style.display = 'none';
+            resultsContainer.style.display = 'none';
+            
+            // Resetuj stan podglądu przy każdej nowej analizie
+            const previewDiv = document.getElementById('pdfPreview');
+            const pagesDiv = document.getElementById('pdfPreviewPages');
+            const previewButton = document.getElementById('previewButton');
+            
+            // Ukryj podgląd i przycisk
+            previewDiv.style.display = 'none';
+            previewButton.style.display = 'none';
+            
+            // Wyczyść poprzednią zawartość podglądu
+            pagesDiv.innerHTML = '';
             
             fetch('/api/analyze', {
                 method: 'POST',
@@ -272,7 +374,34 @@
             .then(response => response.json())
             .then(data => {
                 document.getElementById('loading').style.display = 'none';
+                resultsContainer.style.display = 'flex';
                 showResult(data);
+                
+                // Zapisz plik tymczasowo do późniejszego użycia w podglądzie
+                window.analyzedFile = file;
+                
+                // Zarządzaj widocznością podglądu na podstawie bezpieczeństwa pliku
+                if (!data.error) {
+                    if (data.preview_safe) {
+                        // Dla bezpiecznych plików pokazuj tylko przycisk podglądu
+                        previewButton.style.display = 'block';
+                        previewDiv.style.display = 'none';
+                    } else {
+                        // Dla niebezpiecznych plików pokaż komunikat i ukryj przycisk
+                        previewButton.style.display = 'none';
+                        previewDiv.style.display = 'block';
+                        
+                        pagesDiv.innerHTML = `
+                            <div style="text-align: center; padding: 20px; background-color: #f8d7da; color: #721c24; border-radius: 5px; border: 1px solid #f5c6cb;">
+                                <strong>⚠️ Podgląd niedostępny ze względów bezpieczeństwa</strong><br><br>
+                                Ten dokument zawiera potencjalnie niebezpieczne elementy, które uniemożliwiają bezpieczne generowanie podglądu:<br>
+                                <ul style="text-align: left; margin-top: 10px;">
+                                    ${data.preview_unsafe_reasons.map(reason => `<li>${reason}</li>`).join('')}
+                                </ul>
+                            </div>
+                        `;
+                    }
+                }
             })
             .catch(error => {
                 document.getElementById('loading').style.display = 'none';
@@ -292,9 +421,10 @@
             let safetyLevelText = '';
             let contactInfo = '';
             
-            // Jeśli są linki, zawsze ustaw klasę na 'danger'
-            if (data.links && data.links.length > 0) {
-                className = 'danger';
+            // Jeśli są linki, nie zawsze klasyfikuj jako danger
+            if (data.links && data.links.length > 0 && data.suspicious_links_count > 0) {
+                // Tylko jeśli są podejrzane linki
+                className = data.suspicious_links_count > 2 ? 'danger' : 'warning';
             } else {
                 if (data.safety_level === 'SAFE') {
                     className = 'safe';
@@ -321,7 +451,8 @@
                 contactInfo = `
                     <div class="contact-info contact-warning">
                         <strong>⚠️ Wykryto potencjalne zagrożenie</strong><br>
-                        Skonsultuj się z ekspertem: 
+                        Zachowaj ostrożność podczas korzystania z tego pliku.<br>
+                        W razie wątpliwości skonsultuj się z: 
                         <a href="mailto:bezpieczenstwo@sonel.pl" class="email-link">bezpieczenstwo@sonel.pl</a>
                     </div>
                 `;
@@ -330,7 +461,8 @@
                 contactInfo = `
                     <div class="contact-info contact-warning">
                         <strong>⚠️ Wykryto zagrożenie</strong><br>
-                        Skonsultuj się z ekspertem: 
+                        Zachowaj szczególną ostrożność podczas korzystania z tego pliku.<br>
+                        W razie wątpliwości skonsultuj się z: 
                         <a href="mailto:bezpieczenstwo@sonel.pl" class="email-link">bezpieczenstwo@sonel.pl</a>
                     </div>
                 `;
@@ -339,7 +471,7 @@
                 contactInfo = `
                     <div class="contact-info contact-danger">
                         <strong>🚨 UWAGA! Wykryto wysokie zagrożenie</strong><br>
-                        Natychmiast skonsultuj się z ekspertem: 
+                        Zachowaj szczególną czujność i rozważ konsultację z ekspertem: 
                         <a href="mailto:bezpieczenstwo@sonel.pl" class="email-link">bezpieczenstwo@sonel.pl</a>
                     </div>
                 `;
@@ -355,25 +487,51 @@
             if (data.links && data.links.length > 0) {
                 let linksList = '';
                 
-                // Dodaj ostrzeżenie na górze sekcji linków
+                // Łagodniejsze ostrzeżenie o linkach
                 linksSection = `
                     <div class="links-section">
-                        <div class="links-warning">⚠️ UWAGA: Wykryto linki! PDF z linkami może stanowić zagrożenie bezpieczeństwa!</div>
+                        <div class="links-warning">ℹ️ Dokument zawiera linki - zachowaj ostrożność przy ich otwieraniu.</div>
                         <strong>Wykryte linki (${data.links.length}):</strong>
                         ${data.suspicious_links_count > 0 ? 
-                            `<div class="link-reason">Znaleziono ${data.suspicious_links_count} podejrzanych linków!</div>` : ''}
+                            `<div class="link-reason">Znaleziono ${data.suspicious_links_count} podejrzanych linków.</div>` : ''}
                         <div class="links-list">
                 `;
                 
                 for (const link of data.links) {
-                    const suspiciousClass = link.suspicious ? 'suspicious-link' : '';
-                    const reasonText = link.reason ? `<div class="link-reason">Powód: ${link.reason}</div>` : 
-                                                     `<div class="link-reason">Wszystkie linki w PDF są potencjalnie niebezpieczne!</div>`;
+                    // Określ klasę na podstawie potencjalnego ryzyka
+                    let linkClass = '';
+                    let reasonText = '';
+                    
+                    if (link.suspicious) {
+                        // Sprawdź, czy link jest szczególnie niebezpieczny
+                        const isDangerous = link.reason && (
+                            link.reason.includes("skrócony URL") || 
+                            link.reason.includes("adres IP zamiast domeny")
+                        );
+                        
+                        linkClass = isDangerous ? 'dangerous-link' : 'suspicious-link';
+                        reasonText = link.reason ? 
+                            `<div class="link-reason">Powód: ${link.reason}</div>` : 
+                            `<div class="link-reason">Potencjalnie niebezpieczny link.</div>`;
+                    }
+                    
+                    // Wyświetl wszystkie strony, na których pojawia się link
+                    let pagesText = '';
+                    if (link.pages && link.pages.length > 0) {
+                        if (link.pages.length === 1) {
+                            pagesText = `(Strona ${link.pages[0]})`;
+                        } else {
+                            pagesText = `(Strony: ${link.pages.join(', ')})`;
+                        }
+                    } else if (link.page) {
+                        // Kompatybilność ze starym formatem
+                        pagesText = `(Strona ${link.page})`;
+                    }
                     
                     linksList += `
-                        <div class="link-item ${suspiciousClass}">
+                        <div class="link-item ${linkClass}">
                             ${link.url}
-                            <span class="link-page">(Strona ${link.page})</span>
+                            <span class="link-page">${pagesText}</span>
                             ${reasonText}
                         </div>
                     `;
@@ -396,16 +554,94 @@
                 <h3>Wynik analizy</h3>
                 <p><strong>Plik:</strong> ${data.filename}</p>
                 <p><strong>Poziom bezpieczeństwa:</strong> ${safetyLevelText}</p>
-                <p><strong>Punkty ryzyka:</strong> ${data.risk_score}</p>
                 ${warningsText}
                 ${linksSection}
                 ${contactInfo}
             `;
             resultDiv.style.display = 'block';
         }
-
+        
+        function showPDFPreview() {
+            if (!window.analyzedFile) {
+                alert('Brak pliku do wyświetlenia. Proszę ponownie przesłać plik.');
+                return;
+            }
+            
+            const previewDiv = document.getElementById('pdfPreview');
+            const pagesDiv = document.getElementById('pdfPreviewPages');
+            
+            // Pokaż loader w sekcji podglądu
+            previewDiv.style.display = 'block';
+            pagesDiv.innerHTML = '<p>Generowanie podglądu...</p>';
+            
+            // Ukryj przycisk po kliknięciu
+            previewButton.style.display = 'none';
+            
+            const formData = new FormData();
+            formData.append('file', window.analyzedFile);
+            
+            // Wyświetl szczegóły debugowania
+            console.log("Wysyłanie pliku do podglądu:", window.analyzedFile.name, window.analyzedFile.size, "bytes");
+            
+            fetch('/api/pdf-preview', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => {
+                console.log("Status odpowiedzi:", response.status);
+                if (!response.ok) {
+                    // Obsługa błędu 403 - Forbidden (niedostępny ze względów bezpieczeństwa)
+                    if (response.status === 403) {
+                        return response.json().then(data => {
+                            throw new Error(`Podgląd niedostępny: ${data.error || 'Dokument zawiera niebezpieczne elementy'}`);
+                        });
+                    }
+                    throw new Error(`Błąd serwera: ${response.status}`);
+                }
+                return response.json(); // Wywołanie metody json() - był brak nawiasów
+            })
+            .then(data => {
+                console.log("Otrzymano dane podglądu:", data);
+                if (data.success && data.images && data.images.length > 0) {
+                    pagesDiv.innerHTML = '';
+                    
+                    data.images.forEach(image => {
+                        const imgElement = document.createElement('img');
+                        imgElement.src = image.data;
+                        imgElement.alt = `Strona ${image.page}`;
+                        imgElement.className = 'pdf-page';
+                        imgElement.style.maxWidth = '100%';
+                        
+                        const pageContainer = document.createElement('div');
+                        pageContainer.appendChild(imgElement);
+                        pageContainer.innerHTML += `<p>Strona ${image.page} z ${data.total_pages}</p>`;
+                        
+                        pagesDiv.appendChild(pageContainer);
+                    });
+                    
+                    if (data.total_pages > 3) {
+                        const noteElement = document.createElement('p');
+                        noteElement.innerHTML = `<em>Dokument zawiera ${data.total_pages} stron. Wyświetlono tylko pierwsze 3.</em>`;
+                        pagesDiv.appendChild(noteElement);
+                    }
+                } else {
+                    pagesDiv.innerHTML = '<p>Nie udało się wygenerować podglądu. ' + 
+                        (data.error || 'Nieznany błąd.') + '</p>';
+                }
+            })
+            .catch(error => {
+                console.error("Błąd podczas generowania podglądu:", error);
+                pagesDiv.innerHTML = `
+                    <div style="text-align: center; padding: 20px; background-color: #f8d7da; color: #721c24; border-radius: 5px; border: 1px solid #f5c6cb;">
+                        <strong>⚠️ Nie można wygenerować podglądu</strong><br><br>
+                        ${error.message}
+                    </div>
+                `;
+            });
+        }
 
         function showError(message) {
+            resultsContainer.style.display = 'flex';
             const resultDiv = document.getElementById('result');
             resultDiv.className = 'result danger';
             resultDiv.innerHTML = `

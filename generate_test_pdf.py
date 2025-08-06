@@ -1,5 +1,10 @@
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
 import os
 
 def create_suspicious_pdf(filename="test_suspicious.pdf"):
@@ -289,6 +294,68 @@ startxref
     print(f"Created simulated encrypted PDF: {filename}")
     print("Contains /Encrypt object")
 
+def generuj_testowy_pdf_z_linkami():
+    """
+    Generuje testowy plik PDF zawierający różne typy linków - bezpieczne oraz potencjalnie niebezpieczne
+    """
+    nazwa_pliku = "test_pdf_z_linkami.pdf"
+    doc = SimpleDocTemplate(nazwa_pliku, pagesize=A4)
+    
+    # Style
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name='Tytul', fontName='Helvetica-Bold', fontSize=16, alignment=TA_CENTER, spaceAfter=20))
+    styles.add(ParagraphStyle(name='Naglowek', fontName='Helvetica-Bold', fontSize=14, spaceBefore=15, spaceAfter=10))
+    styles.add(ParagraphStyle(name='Link', fontName='Helvetica', fontSize=12, spaceBefore=5, spaceAfter=5))
+    styles.add(ParagraphStyle(name='Opis', fontName='Helvetica-Oblique', fontSize=10, textColor=colors.gray, spaceBefore=2, spaceAfter=10))
+    
+    # Zawartość
+    elementy = []
+    
+    # Tytuł
+    elementy.append(Paragraph("Testowy plik PDF z różnymi typami linków", styles['Tytul']))
+    elementy.append(Spacer(1, 20))
+    
+    # Bezpieczne linki
+    elementy.append(Paragraph("Bezpieczne linki (HTTPS)", styles['Naglowek']))
+    elementy.append(Paragraph("<a href='https://www.gov.pl/'>https://www.gov.pl/</a> - Oficjalna strona rządowa Polski", styles['Link']))
+    elementy.append(Paragraph("<a href='https://www.pzu.pl/'>https://www.pzu.pl/</a> - Strona firmy ubezpieczeniowej", styles['Link']))
+    elementy.append(Paragraph("<a href='https://www.nask.pl/'>https://www.nask.pl/</a> - NASK - Naukowa i Akademicka Sieć Komputerowa", styles['Link']))
+    elementy.append(Paragraph("Te linki są bezpieczne, ponieważ używają protokołu HTTPS i prowadzą do zaufanych domen.", styles['Opis']))
+    
+    # Linki HTTP (nieszyfrowane)
+    elementy.append(Paragraph("Linki nieszyfrowane (HTTP)", styles['Naglowek']))
+    elementy.append(Paragraph("<a href='http://example.com/'>http://example.com/</a> - Przykładowa domena", styles['Link']))
+    elementy.append(Paragraph("<a href='http://info.cern.ch/'>http://info.cern.ch/</a> - Pierwsza strona WWW w historii", styles['Link']))
+    elementy.append(Paragraph("Te linki używają niezabezpieczonego protokołu HTTP, co może stanowić zagrożenie dla bezpieczeństwa.", styles['Opis']))
+    
+    # Skrócone linki
+    elementy.append(Paragraph("Skrócone linki", styles['Naglowek']))
+    elementy.append(Paragraph("<a href='https://bit.ly/3lKfKU9'>https://bit.ly/3lKfKU9</a> - Skrócony link do jakiejś strony", styles['Link']))
+    elementy.append(Paragraph("<a href='https://tinyurl.com/2jc9uv8p'>https://tinyurl.com/2jc9uv8p</a> - Inny skrócony link", styles['Link']))
+    elementy.append(Paragraph("Skrócone linki ukrywają docelowy adres URL, co może być wykorzystane w atakach phishingowych.", styles['Opis']))
+    
+    # Linki z nietypowymi TLD
+    elementy.append(Paragraph("Linki z nietypowymi rozszerzeniami domen", styles['Naglowek']))
+    elementy.append(Paragraph("<a href='https://example.xyz/'>https://example.xyz/</a> - Domena z rozszerzeniem .xyz", styles['Link']))
+    elementy.append(Paragraph("<a href='https://example.tk/'>https://example.tk/</a> - Domena z rozszerzeniem .tk (darmowe domeny)", styles['Link']))
+    elementy.append(Paragraph("Nietypowe rozszerzenia domen (.xyz, .tk, .ml itp.) są często używane przez oszustów, ponieważ są tanie lub darmowe.", styles['Opis']))
+    
+    # Linki z adresami IP
+    elementy.append(Paragraph("Linki zawierające adresy IP", styles['Naglowek']))
+    elementy.append(Paragraph("<a href='http://192.168.1.1/'>http://192.168.1.1/</a> - Link do routera lokalnego", styles['Link']))
+    elementy.append(Paragraph("<a href='https://104.18.22.164/'>https://104.18.22.164/</a> - Link do serwera za pomocą IP", styles['Link']))
+    elementy.append(Paragraph("Linki zawierające adresy IP zamiast nazw domen mogą wskazywać na próbę oszustwa, ponieważ ukrywają prawdziwą nazwę domeny.", styles['Opis']))
+    
+    # Linki do plików
+    elementy.append(Paragraph("Linki do plików", styles['Naglowek']))
+    elementy.append(Paragraph("<a href='https://example.com/download.exe'>https://example.com/download.exe</a> - Link do pliku wykonywalnego", styles['Link']))
+    elementy.append(Paragraph("<a href='https://example.com/dokument.pdf'>https://example.com/dokument.pdf</a> - Link do innego PDF", styles['Link']))
+    elementy.append(Paragraph("Linki do plików wykonywalnych mogą stanowić poważne zagrożenie bezpieczeństwa.", styles['Opis']))
+    
+    # Generowanie dokumentu
+    doc.build(elementy)
+    print(f"Wygenerowano testowy plik PDF: {nazwa_pliku}")
+
 if __name__ == "__main__":
     print("Generating test PDF files for security analysis...")
     print("=" * 50)
@@ -298,9 +365,12 @@ if __name__ == "__main__":
     create_high_object_count_pdf()
     print()
     create_encrypted_pdf_simulation()
+    print()
+    generuj_testowy_pdf_z_linkami()
     
     print("\nTest files created! You can now test them with your PDF analyzer.")
     print("Expected results:")
     print("- test_suspicious.pdf: HIGH_RISK (JavaScript, Launch, etc.)")
     print("- test_many_objects.pdf: LOW_RISK (high object count)")
     print("- test_encrypted_simulation.pdf: LOW_RISK (encryption)")
+    print("- test_pdf_z_linkami.pdf: LOW_RISK (various links)")
