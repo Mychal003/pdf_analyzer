@@ -105,6 +105,70 @@
         .email-link:hover {
             text-decoration: underline;
         }
+        
+        .links-section {
+            margin-top: 15px;
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+            padding: 10px;
+        }
+        
+        .links-list {
+            max-height: 200px;
+            overflow-y: auto;
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #fff;
+            border: 1px solid #e9ecef;
+            border-radius: 4px;
+        }
+        
+        .link-item {
+            padding: 5px;
+            margin-bottom: 5px;
+            border-bottom: 1px solid #f1f1f1;
+            word-break: break-all;
+            color: #dc3545; /* Wszystkie linki są teraz czerwone */
+            font-weight: bold;
+        }
+        
+        .link-item:last-child {
+            border-bottom: none;
+        }
+        
+        .suspicious-link {
+            background-color: #f8d7da;
+            border-left: 3px solid #dc3545;
+            padding-left: 8px;
+        }
+        
+        .link-reason {
+            font-size: 0.85em;
+            color: #721c24;
+            margin-top: 2px;
+        }
+        
+        .link-page {
+            font-size: 0.8em;
+            color: #6c757d;
+            margin-left: 5px;
+        }
+        
+        .links-warning {
+            background-color: #f8d7da;
+            color: #721c24;
+            padding: 8px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            font-weight: bold;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .no-links {
+            font-style: italic;
+            color: #6c757d;
+        }
     </style>
 </head>
 <body>
@@ -113,7 +177,7 @@
         
         <div class="upload-box" id="uploadBox">
             <p>Kliknij tutaj lub przeciągnij plik PDF</p>
-            <button class="btn" type="button" onclick="document.getElementById('fileInput').click()">Wybierz plik</button>
+            <button class="btn" type="button" onclick="selectFile()">Wybierz plik</button>
             <input type="file" id="fileInput" accept=".pdf" style="display: none;">
         </div>
         
@@ -129,15 +193,26 @@
         const fileInput = document.getElementById('fileInput');
 
         // Obsługa kliknięcia w upload box
-        uploadBox.addEventListener('click', function() {
-            fileInput.click();
+        uploadBox.addEventListener('click', function(e) {
+            // Sprawdź czy kliknięcie nie było w button
+            if (e.target.tagName !== 'BUTTON') {
+                fileInput.click();
+            }
         });
+
+        // Obsługa kliknięcia w button
+        function selectFile() {
+            fileInput.value = ''; // Wyczyść poprzednią wartość
+            fileInput.click();
+        }
 
         // Obsługa wyboru pliku przez input
         fileInput.addEventListener('change', function(e) {
             const file = e.target.files[0];
-            if (file) {
+            if (file && file.type === 'application/pdf') {
                 analyzePDF(file);
+            } else if (file) {
+                showError('Dozwolone są tylko pliki PDF');
             }
         });
 
@@ -151,7 +226,10 @@
         uploadBox.addEventListener('dragleave', function(e) {
             e.preventDefault();
             e.stopPropagation();
-            uploadBox.classList.remove('drag-over');
+            // Sprawdź czy opuszczamy rzeczywiście upload box
+            if (!uploadBox.contains(e.relatedTarget)) {
+                uploadBox.classList.remove('drag-over');
+            }
         });
 
         uploadBox.addEventListener('drop', function(e) {
@@ -176,7 +254,6 @@
         document.addEventListener('dragover', function(e) {
             e.preventDefault();
         });
-
         document.addEventListener('drop', function(e) {
             e.preventDefault();
         });
@@ -215,10 +292,31 @@
             let safetyLevelText = '';
             let contactInfo = '';
             
+            // Jeśli są linki, zawsze ustaw klasę na 'danger'
+            if (data.links && data.links.length > 0) {
+                className = 'danger';
+            } else {
+                if (data.safety_level === 'SAFE') {
+                    className = 'safe';
+                } else if (data.safety_level === 'LOW_RISK' || data.safety_level === 'MEDIUM_RISK') {
+                    className = 'warning';
+                } else if (data.safety_level === 'HIGH_RISK') {
+                    className = 'danger';
+                }
+            }
+            
             if (data.safety_level === 'SAFE') {
                 safetyLevelText = 'BEZPIECZNY';
+                // Dodaj informację o linkach nawet dla bezpiecznych PDF-ów
+                contactInfo = `
+                    <div class="contact-info">
+                        <strong>💡 Pamiętaj o bezpieczeństwie</strong><br>
+                        Zawsze sprawdzaj linki w PDF zanim je klikniesz!<br>
+                        W razie wątpliwości skonsultuj się z: 
+                        <a href="mailto:bezpieczenstwo@sonel.pl" class="email-link">bezpieczenstwo@sonel.pl</a>
+                    </div>
+                `;
             } else if (data.safety_level === 'LOW_RISK') {
-                className = 'warning';
                 safetyLevelText = 'NISKIE RYZYKO';
                 contactInfo = `
                     <div class="contact-info contact-warning">
@@ -228,7 +326,6 @@
                     </div>
                 `;
             } else if (data.safety_level === 'MEDIUM_RISK') {
-                className = 'warning';
                 safetyLevelText = 'ŚREDNIE RYZYKO';
                 contactInfo = `
                     <div class="contact-info contact-warning">
@@ -238,7 +335,6 @@
                     </div>
                 `;
             } else if (data.safety_level === 'HIGH_RISK') {
-                className = 'danger';
                 safetyLevelText = 'WYSOKIE RYZYKO';
                 contactInfo = `
                     <div class="contact-info contact-danger">
@@ -253,6 +349,47 @@
             if (data.warnings && data.warnings.length > 0) {
                 warningsText = '<br><strong>Ostrzeżenia:</strong><br>' + data.warnings.join('<br>');
             }
+            
+            // Add links section
+            let linksSection = '';
+            if (data.links && data.links.length > 0) {
+                let linksList = '';
+                
+                // Dodaj ostrzeżenie na górze sekcji linków
+                linksSection = `
+                    <div class="links-section">
+                        <div class="links-warning">⚠️ UWAGA: Wykryto linki! PDF z linkami może stanowić zagrożenie bezpieczeństwa!</div>
+                        <strong>Wykryte linki (${data.links.length}):</strong>
+                        ${data.suspicious_links_count > 0 ? 
+                            `<div class="link-reason">Znaleziono ${data.suspicious_links_count} podejrzanych linków!</div>` : ''}
+                        <div class="links-list">
+                `;
+                
+                for (const link of data.links) {
+                    const suspiciousClass = link.suspicious ? 'suspicious-link' : '';
+                    const reasonText = link.reason ? `<div class="link-reason">Powód: ${link.reason}</div>` : 
+                                                     `<div class="link-reason">Wszystkie linki w PDF są potencjalnie niebezpieczne!</div>`;
+                    
+                    linksList += `
+                        <div class="link-item ${suspiciousClass}">
+                            ${link.url}
+                            <span class="link-page">(Strona ${link.page})</span>
+                            ${reasonText}
+                        </div>
+                    `;
+                }
+                
+                linksSection += `${linksList}</div></div>`;
+            } else {
+                linksSection = `
+                    <div class="links-section">
+                        <strong>Wykryte linki:</strong>
+                        <div class="links-list">
+                            <div class="no-links">Nie znaleziono linków w tym dokumencie.</div>
+                        </div>
+                    </div>
+                `;
+            }
 
             resultDiv.className = 'result ' + className;
             resultDiv.innerHTML = `
@@ -261,10 +398,12 @@
                 <p><strong>Poziom bezpieczeństwa:</strong> ${safetyLevelText}</p>
                 <p><strong>Punkty ryzyka:</strong> ${data.risk_score}</p>
                 ${warningsText}
+                ${linksSection}
                 ${contactInfo}
             `;
             resultDiv.style.display = 'block';
         }
+
 
         function showError(message) {
             const resultDiv = document.getElementById('result');

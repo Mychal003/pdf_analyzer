@@ -9,30 +9,21 @@ import uuid
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template
 from flask_talisman import Talisman
+import fitz  # PyMuPDF
+import re
 
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
 Talisman(app, 
-    force_https=False,  # Set to True in production with HTTPS
-    strict_transport_security=False,  # Enable in production with HTTPS
+    force_https=False,
+    strict_transport_security=False,
     content_security_policy={
         'default-src': "'self'",
         'script-src': "'self' 'unsafe-inline'",
         'style-src': "'self' 'unsafe-inline'",
-        'img-src': "'self' data:",
-        'font-src': "'self'",
-        'connect-src': "'self'",
-        'frame-ancestors': "'none'",
-        'base-uri': "'self'",
-        'form-action': "'self'"
     },
-    feature_policy={
-        'geolocation': "'none'",
-        'camera': "'none'",
-        'microphone': "'none'"
-    }
 )
 
 
@@ -122,6 +113,64 @@ def secure_delete_file(file_path):
             logging.error(f"Failed to delete file even with fallback: {file_path}")
         return False
 
+def extract_links_from_pdf(file_path):
+    """Extract links from PDF and analyze them for potential risks"""
+    links = []
+    suspicious_domains = [
+        'bit.ly', 'tinyurl.com', 'goo.gl', 't.co', 'is.gd', 'ow.ly', 'rebrand.ly',
+        'tiny.cc', 'tr.im', 'cutt.ly', 'shorturl.at', 'rb.gy', 'soo.gd'
+    ]
+    
+    try:
+        doc = fitz.open(file_path)
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            page_links = page.get_links()
+            
+            for link in page_links:
+                if 'uri' in link:
+                    url = link['uri']
+                    is_suspicious = False
+                    reason = []
+                    
+                    # Check for URL shorteners
+                    for domain in suspicious_domains:
+                        if domain in url.lower():
+                            is_suspicious = True
+                            reason.append("skrócony URL")
+                            break
+                    
+                    # Check for non-HTTPS
+                    if url.startswith('http://'):
+                        is_suspicious = True
+                        reason.append("nieszyfrowane połączenie")
+                    
+                    # Check for unusual TLDs
+                    unusual_tlds = ['.xyz', '.top', '.club', '.tk', '.ml', '.ga', '.cf']
+                    for tld in unusual_tlds:
+                        if url.lower().endswith(tld):
+                            is_suspicious = True
+                            reason.append(f"nietypowa domena {tld}")
+                            break
+                    
+                    # Check for IP addresses in URLs
+                    if re.search(r'https?://\d+\.\d+\.\d+\.\d+', url):
+                        is_suspicious = True
+                        reason.append("adres IP zamiast domeny")
+                    
+                    links.append({
+                        'url': url,
+                        'page': page_num + 1,
+                        'suspicious': is_suspicious,
+                        'reason': ", ".join(reason) if reason else None
+                    })
+        
+        return links
+    
+    except Exception as e:
+        logging.error(f"Error extracting links: {str(e)}")
+        return []
+
 def analyze_pdf_safety(file_path):
     """Analyze PDF and return safety assessment"""
     try:
@@ -131,40 +180,117 @@ def analyze_pdf_safety(file_path):
         json_result = PDFiD2JSON(xmlDoc, False)
         data = json.loads(json_result)[0]['pdfid']
         
+        # Extract links from the PDF
+        links = extract_links_from_pdf(file_path)
+        
+        # Add suspicious links to risk assessment
+        suspicious_links_count = sum(1 for link in links if link['suspicious'])
+        
         # Safety assessment logic
         risk_score = 0
         warnings = []
         
-        # Check for dangerous elements
+        # Binary content analysis - each bit represents presence of specific element
+        content_binary = {
+            'javascript': 0,      # bit 0: JavaScript code
+            'actions': 0,         # bit 1: Automatic actions
+            'launch': 0,          # bit 2: Launch actions
+            'embedded': 0,        # bit 3: Embedded files
+            'forms': 0,           # bit 4: Forms
+            'encryption': 0,      # bit 5: Encryption
+            'large_objects': 0,   # bit 6: Large number of objects
+            'xfa': 0              # bit 7: XFA forms
+        }
+        
+        # Check for dangerous elements and update binary code
         for keyword in data['keywords']['keyword']:
             name = keyword['name']
             count = keyword['count']
             
-            if name in DANGER_KEYWORDS and count > 0:
-                risk_score += count * 10
-                warnings.append(f"Zawiera {count} wystąpień {name}")
+            if name in ['/JS', '/JavaScript'] and count > 0:
+                risk_score += count * 15
+                warnings.append(f"Zawiera {count} wystąpień JavaScript")
+                content_binary['javascript'] = 1
+                
+            elif name in ['/AA', '/OpenAction'] and count > 0:
+                risk_score += count * 12
+                warnings.append(f"Zawiera {count} automatycznych akcji")
+                content_binary['actions'] = 1
+                
+            elif name == '/Launch' and count > 0:
+                risk_score += count * 20
+                warnings.append(f"Zawiera {count} akcji uruchamiania")
+                content_binary['launch'] = 1
+                
+            elif name == '/EmbeddedFile' and count > 0:
+                risk_score += count * 8
+                warnings.append(f"Zawiera {count} osadzonych plików")
+                content_binary['embedded'] = 1
+                
+            elif name in ['/AcroForm', '/XFA'] and count > 0:
+                if name == '/XFA':
+                    risk_score += count * 5
+                    content_binary['xfa'] = 1
+                    warnings.append(f"Zawiera {count} formularzy XFA")
+                else:
+                    content_binary['forms'] = 1
         
         # Check for encryption
         encrypt_count = next((k['count'] for k in data['keywords']['keyword'] if k['name'] == '/Encrypt'), 0)
         if encrypt_count > 0:
-            risk_score += 5
+            risk_score += 3
             warnings.append("PDF jest zaszyfrowany")
+            content_binary['encryption'] = 1
         
         # Check for suspicious object counts
         obj_count = next((k['count'] for k in data['keywords']['keyword'] if k['name'] == 'obj'), 0)
         if obj_count > 1000:
             risk_score += 5
             warnings.append(f"Duża liczba obiektów: {obj_count}")
+            content_binary['large_objects'] = 1
+        
+        # Traktuj wszystkie pliki PDF z linkami jako niebezpieczne
+        if len(links) > 0:
+            # Dodaj co najmniej 15 punktów ryzyka za obecność linków
+            risk_score += max(15, len(links) * 3)
+            warnings.append(f"Wykryto {len(links)} linków - każdy link może stanowić zagrożenie bezpieczeństwa!")
+        
+        # Convert binary analysis to string
+        binary_string = ''.join([
+            str(content_binary['javascript']),
+            str(content_binary['actions']),
+            str(content_binary['launch']),
+            str(content_binary['embedded']),
+            str(content_binary['forms']),
+            str(content_binary['encryption']),
+            str(content_binary['large_objects']),
+            str(content_binary['xfa'])
+        ])
+        
+        # Generate error code based on binary analysis
+        binary_int = int(binary_string, 2) if binary_string != '00000000' else 0
+        error_code = f"PDF-{binary_int:03d}"
         
         # Determine safety level
-        if risk_score == 0:
-            safety_level = "SAFE"
-        elif risk_score <= 10:
-            safety_level = "LOW_RISK"
-        elif risk_score <= 40:
-            safety_level = "MEDIUM_RISK"
+        if len(links) > 0:
+            # Każdy PDF z linkami jest co najmniej MEDIUM_RISK
+            if risk_score <= 20:
+                safety_level = "MEDIUM_RISK"
+            else:
+                safety_level = "HIGH_RISK"
         else:
-            safety_level = "HIGH_RISK"
+            if risk_score == 0:
+                safety_level = "SAFE"
+            elif risk_score <= 10:
+                safety_level = "LOW_RISK"
+            elif risk_score <= 40:
+                safety_level = "MEDIUM_RISK"
+            else:
+                safety_level = "HIGH_RISK"
+        
+        # Always add link warning for all PDFs
+        if len(links) > 0:
+            warnings.append("UWAGA: PDF zawiera linki które mogą prowadzić do niebezpiecznych stron!")
         
         return {
             'is_pdf': data['isPdf'] == 'True',
@@ -173,8 +299,14 @@ def analyze_pdf_safety(file_path):
             'warnings': warnings,
             'header': data['header'],
             'keywords': data['keywords']['keyword'],
+            'content_binary_code': binary_string,
+            'content_analysis': content_binary,
+            'error_code': error_code,
             'analysis_complete': True,
-            'error': None
+            'error': None,
+            'links': links,
+            'links_count': len(links),
+            'suspicious_links_count': suspicious_links_count
         }
         
     except Exception as e:
@@ -184,9 +316,15 @@ def analyze_pdf_safety(file_path):
             'safety_level': 'ERROR',
             'risk_score': -1,
             'warnings': ['Analiza nie powiodła się'],
+            'content_binary_code': '11111111',  # Error state
+            'error_code': 'PDF-ERR',
             'analysis_complete': False,
-            'error': str(e)
+            'error': str(e),
+            'links': [],
+            'links_count': 0,
+            'suspicious_links_count': 0
         }
+
 
 @app.route('/')
 def index():
