@@ -14,6 +14,7 @@ import re
 import base64
 from io import BytesIO
 from PIL import Image
+from flask_limiter import Limiter
 
 
 app = Flask(__name__)
@@ -117,21 +118,72 @@ def secure_delete_file(file_path):
             logging.error(f"Failed to delete file even with fallback: {file_path}")
         return False
 
+def analyze_pdf_safety_metadata_only(file_path):
+    """Szybka analiza metadanych bez otwierania treści PDF"""
+    try:
+        xmlDoc = PDFiD(file_path, allNames=False, extraData=True, disarm=False, force=False)
+        json_result = PDFiD2JSON(xmlDoc, False)
+        data = json.loads(json_result)[0]['pdfid']
+        
+        dangerous_elements = {
+            'javascript': 0,
+            'actions': 0,
+            'launch': 0,
+            'embedded': 0,
+            'xfa': 0
+        }
+        
+        # Sprawdź niebezpieczne elementy
+        for keyword in data['keywords']['keyword']:
+            name = keyword['name']
+            count = keyword['count']
+            
+            if name in ['/JS', '/JavaScript'] and count > 0:
+                dangerous_elements['javascript'] = count
+            elif name in ['/AA', '/OpenAction'] and count > 0:
+                dangerous_elements['actions'] = count
+            elif name == '/Launch' and count > 0:
+                dangerous_elements['launch'] = count
+            elif name == '/EmbeddedFile' and count > 0:
+                dangerous_elements['embedded'] = count
+            elif name == '/XFA' and count > 0:
+                dangerous_elements['xfa'] = count
+        
+        # Określ czy plik jest bezpieczny do dalszej analizy
+        is_safe_to_open = all(count == 0 for count in dangerous_elements.values())
+        
+        return {
+            'safe_to_open': is_safe_to_open,
+            'dangerous_elements': dangerous_elements,
+            'pdfid_data': data
+        }
+    except Exception as e:
+        logging.error(f"Error in metadata analysis: {str(e)}")
+        return {
+            'safe_to_open': False,
+            'dangerous_elements': {'error': 1},
+            'pdfid_data': None
+        }
+
 def extract_links_from_pdf(file_path):
     """Extract links from PDF and analyze them for potential risks"""
     links = []
-    seen_links = set()  # Zbiór do śledzenia już widzianych linków
+    seen_links = set()
     suspicious_domains = [
         'bit.ly', 'tinyurl.com', 'goo.gl', 't.co', 'is.gd', 'ow.ly', 'rebrand.ly',
         'tiny.cc', 'tr.im', 'cutt.ly', 'shorturl.at', 'rb.gy', 'soo.gd', 'sprl.in'
     ]
     
-    # Wzorce wyrażeń regularnych do znajdowania URLi w tekście
     url_pattern = r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+(?:/[-\w%!./?=&+#]*)*'
-    # Wzorzec do znajdowania URLi które mogą być przerwane przez znak nowej linii
     broken_url_pattern = r'(https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+)[-\w%!./?=&+#]*(?:\n|\r\n|\r)[-\w%!./?=&+#]*'
     
     try:
+        # KRYTYCZNE: Sprawdź bezpieczeństwo przed otwarciem
+        metadata_check = analyze_pdf_safety_metadata_only(file_path)
+        if not metadata_check['safe_to_open']:
+            logging.warning(f"Skipping link extraction due to dangerous elements: {metadata_check['dangerous_elements']}")
+            return []  # Nie otwieraj niebezpiecznych plików
+        
         doc = fitz.open(file_path)
         
         # 1. Najpierw zbieramy aktywne hiperłącza
@@ -295,98 +347,95 @@ def extract_links_from_pdf(file_path):
 def analyze_pdf_safety(file_path):
     """Analyze PDF and return safety assessment"""
     try:
-        xmlDoc = PDFiD(file_path, allNames=False, extraData=True, disarm=False, force=False)
+        # KROK 1: Szybka analiza metadanych
+        metadata_check = analyze_pdf_safety_metadata_only(file_path)
+        data = metadata_check['pdfid_data']
         
-        # Convert to JSON for easier processing
-        json_result = PDFiD2JSON(xmlDoc, False)
-        data = json.loads(json_result)[0]['pdfid']
+        if not data:
+            raise Exception("Nie można odczytać metadanych PDF")
         
-        # Extract links from the PDF
-        links = extract_links_from_pdf(file_path)
-        
-        # Add suspicious links to risk assessment
-        suspicious_links_count = sum(1 for link in links if link['suspicious'])
-        
-        # Safety assessment logic
+        # KROK 2: Podstawowa analiza ryzyka na podstawie metadanych
         risk_score = 0
         warnings = []
+        dangerous_elements = metadata_check['dangerous_elements']
         
-        # Binary content analysis - each bit represents presence of specific element
         content_binary = {
-            'javascript': 0,      # bit 0: JavaScript code
-            'actions': 0,         # bit 1: Automatic actions
-            'launch': 0,          # bit 2: Launch actions
-            'embedded': 0,        # bit 3: Embedded files
-            'forms': 0,           # bit 4: Forms
-            'encryption': 0,      # bit 5: Encryption
-            'large_objects': 0,   # bit 6: Large number of objects
-            'xfa': 0              # bit 7: XFA forms
+            'javascript': 0,
+            'actions': 0,
+            'launch': 0,
+            'embedded': 0,
+            'forms': 0,
+            'encryption': 0,
+            'large_objects': 0,
+            'xfa': 0
         }
         
-        # Check for dangerous elements and update binary code
+        # Analiza niebezpiecznych elementów
+        if dangerous_elements.get('javascript', 0) > 0:
+            count = dangerous_elements['javascript']
+            risk_score += count * 15
+            warnings.append(f"Zawiera {count} wystąpień JavaScript")
+            content_binary['javascript'] = 1
+            
+        if dangerous_elements.get('actions', 0) > 0:
+            count = dangerous_elements['actions']
+            risk_score += count * 12
+            warnings.append(f"Zawiera {count} automatycznych akcji")
+            content_binary['actions'] = 1
+            
+        if dangerous_elements.get('launch', 0) > 0:
+            count = dangerous_elements['launch']
+            risk_score += count * 20
+            warnings.append(f"Zawiera {count} akcji uruchamiania")
+            content_binary['launch'] = 1
+            
+        if dangerous_elements.get('embedded', 0) > 0:
+            count = dangerous_elements['embedded']
+            risk_score += count * 8
+            warnings.append(f"Zawiera {count} osadzonych plików")
+            content_binary['embedded'] = 1
+            
+        if dangerous_elements.get('xfa', 0) > 0:
+            count = dangerous_elements['xfa']
+            risk_score += count * 5
+            warnings.append(f"Zawiera {count} formularzy XFA")
+            content_binary['xfa'] = 1
+        
+        # Sprawdź inne elementy
         for keyword in data['keywords']['keyword']:
             name = keyword['name']
             count = keyword['count']
             
-            if name in ['/JS', '/JavaScript'] and count > 0:
-                risk_score += count * 15
-                warnings.append(f"Zawiera {count} wystąpień JavaScript")
-                content_binary['javascript'] = 1
-                
-            elif name in ['/AA', '/OpenAction'] and count > 0:
-                risk_score += count * 12
-                warnings.append(f"Zawiera {count} automatycznych akcji")
-                content_binary['actions'] = 1
-                
-            elif name == '/Launch' and count > 0:
-                risk_score += count * 20
-                warnings.append(f"Zawiera {count} akcji uruchamiania")
-                content_binary['launch'] = 1
-                
-            elif name == '/EmbeddedFile' and count > 0:
-                risk_score += count * 8
-                warnings.append(f"Zawiera {count} osadzonych plików")
-                content_binary['embedded'] = 1
-                
-            elif name in ['/AcroForm', '/XFA'] and count > 0:
-                if name == '/XFA':
-                    risk_score += count * 5
-                    content_binary['xfa'] = 1
-                    warnings.append(f"Zawiera {count} formularzy XFA")
-                else:
-                    content_binary['forms'] = 1
+            if name == '/AcroForm' and count > 0:
+                content_binary['forms'] = 1
+            elif name == '/Encrypt' and count > 0:
+                risk_score += 3
+                warnings.append("PDF jest zaszyfrowany")
+                content_binary['encryption'] = 1
+            elif name == 'obj' and count > 1000:
+                risk_score += 5
+                warnings.append(f"Duża liczba obiektów: {count}")
+                content_binary['large_objects'] = 1
         
-        # Check for encryption
-        encrypt_count = next((k['count'] for k in data['keywords']['keyword'] if k['name'] == '/Encrypt'), 0)
-        if encrypt_count > 0:
-            risk_score += 3
-            warnings.append("PDF jest zaszyfrowany")
-            content_binary['encryption'] = 1
+        # KROK 3: Ekstrakcja linków tylko dla bezpiecznych plików
+        links = []
+        suspicious_links_count = 0
         
-        # Check for suspicious object counts
-        obj_count = next((k['count'] for k in data['keywords']['keyword'] if k['name'] == 'obj'), 0)
-        if obj_count > 1000:
-            risk_score += 5
-            warnings.append(f"Duża liczba obiektów: {obj_count}")
-            content_binary['large_objects'] = 1
-        
-        # Złagodzona ocena dla plików z linkami
-        if len(links) > 0:
-            # Znacznie mniejsza waga dla samych linków - maksymalnie 5 punktów bazowych plus 0.5 za każdy link
-            base_risk = min(5, len(links))
-            per_link_risk = 0.5
-            suspicious_risk = 1  # Dodatkowe punkty za podejrzane linki, ale mniej niż wcześniej
-            
-            link_risk_score = base_risk + (len(links) * per_link_risk) + (suspicious_links_count * suspicious_risk)
-            # Ogranicz maksymalne ryzyko za linki
-            link_risk_score = min(link_risk_score, 15)
-            
-            risk_score += link_risk_score
-            
-            if suspicious_links_count > 0:
-                warnings.append(f"Wykryto {len(links)} linków, w tym {suspicious_links_count} podejrzanych.")
-            else:
-                warnings.append(f"Wykryto {len(links)} linków - zachowaj ostrożność przy ich otwieraniu.")
+        if metadata_check['safe_to_open']:
+            try:
+                links = extract_links_from_pdf(file_path)
+                suspicious_links_count = sum(1 for link in links if link['suspicious'])
+                
+                if len(links) > 0:
+                    if suspicious_links_count > 0:
+                        warnings.append(f"Wykryto {len(links)} linków, w tym {suspicious_links_count} podejrzanych.")
+                    else:
+                        warnings.append(f"Wykryto {len(links)} linków - zachowaj ostrożność przy ich otwieraniu.")
+            except Exception as e:
+                logging.error(f"Error during safe link extraction: {str(e)}")
+                warnings.append("Nie można było przeanalizować linków ze względów bezpieczeństwa")
+        else:
+            warnings.append("Analiza linków pominięta ze względów bezpieczeństwa")
         
         # Convert binary analysis to string
         binary_string = ''.join([
@@ -404,64 +453,35 @@ def analyze_pdf_safety(file_path):
         binary_int = int(binary_string, 2) if binary_string != '00000000' else 0
         error_code = f"PDF-{binary_int:03d}"
         
-        # Determine safety level - łagodniejsza klasyfikacja dla plików z linkami
-        if len(links) > 0:
-            # Sama obecność linków nie powoduje już wysokiego ryzyka
-            if suspicious_links_count > 5 or risk_score > 40:
-                safety_level = "HIGH_RISK"
-            elif suspicious_links_count > 2 or risk_score > 20:
-                safety_level = "MEDIUM_RISK"
-            elif suspicious_links_count > 0 or risk_score > 10:
-                safety_level = "LOW_RISK"
-            else:
-                safety_level = "SAFE"  # PDF tylko z bezpiecznymi linkami może być bezpieczny
+        # Determine safety level - bez uwzględniania linków
+        if risk_score == 0:
+            safety_level = "SAFE"
+        elif risk_score <= 10:
+            safety_level = "LOW_RISK"
+        elif risk_score <= 40:
+            safety_level = "MEDIUM_RISK"
         else:
-            if risk_score == 0:
-                safety_level = "SAFE"
-            elif risk_score <= 10:
-                safety_level = "LOW_RISK"
-            elif risk_score <= 40:
-                safety_level = "MEDIUM_RISK"
-            else:
-                safety_level = "HIGH_RISK"
+            safety_level = "HIGH_RISK"
         
         # Łagodniejsze ostrzeżenie
         if len(links) > 0 and safety_level != "HIGH_RISK":
             warnings.append("Dokument zawiera linki - sprawdź je przed kliknięciem.")
         
         # Określ, czy PDF jest bezpieczny do podglądu
-        preview_safe = True
+        preview_safe = metadata_check['safe_to_open']
         preview_unsafe_reasons = []
         
-        # Sprawdź niebezpieczne elementy - tylko konkretne elementy blokują podgląd, nie ogólny poziom ryzyka
-        if content_binary['javascript'] == 1:
-            preview_safe = False
-            preview_unsafe_reasons.append("Zawiera JavaScript")
-        
-        if content_binary['actions'] == 1:
-            preview_safe = False
-            preview_unsafe_reasons.append("Zawiera akcje automatyczne")
-        
-        if content_binary['launch'] == 1:
-            preview_safe = False
-            preview_unsafe_reasons.append("Zawiera akcje uruchamiania")
-        
-        if content_binary['embedded'] == 1:
-            preview_safe = False
-            preview_unsafe_reasons.append("Zawiera osadzone pliki")
-            
-        if content_binary['xfa'] == 1:
-            preview_safe = False
-            preview_unsafe_reasons.append("Zawiera formularze XFA")
-        
-        # Nie blokujemy już podglądu tylko na podstawie poziomu ryzyka
-        # Usuwamy poniższy kod:
-        # if safety_level == "HIGH_RISK":
-        #     preview_safe = False
-        #     if not preview_unsafe_reasons:
-        #         preview_unsafe_reasons.append("Wysoki poziom ryzyka")
-        
-        # Sama obecność linków NIE blokuje podglądu
+        if not preview_safe:
+            if dangerous_elements.get('javascript', 0) > 0:
+                preview_unsafe_reasons.append("Zawiera JavaScript")
+            if dangerous_elements.get('actions', 0) > 0:
+                preview_unsafe_reasons.append("Zawiera akcje automatyczne")
+            if dangerous_elements.get('launch', 0) > 0:
+                preview_unsafe_reasons.append("Zawiera akcje uruchamiania")
+            if dangerous_elements.get('embedded', 0) > 0:
+                preview_unsafe_reasons.append("Zawiera osadzone pliki")
+            if dangerous_elements.get('xfa', 0) > 0:
+                preview_unsafe_reasons.append("Zawiera formularze XFA")
         
         return {
             'is_pdf': data['isPdf'] == 'True',
@@ -479,7 +499,8 @@ def analyze_pdf_safety(file_path):
             'links_count': len(links),
             'suspicious_links_count': suspicious_links_count,
             'preview_safe': preview_safe,
-            'preview_unsafe_reasons': preview_unsafe_reasons
+            'preview_unsafe_reasons': preview_unsafe_reasons,
+            'safe_to_open': metadata_check['safe_to_open']  # Dodatkowa informacja
         }
         
     except Exception as e:
@@ -489,7 +510,7 @@ def analyze_pdf_safety(file_path):
             'safety_level': 'ERROR',
             'risk_score': -1,
             'warnings': ['Analiza nie powiodła się'],
-            'content_binary_code': '11111111',  # Error state
+            'content_binary_code': '11111111',
             'error_code': 'PDF-ERR',
             'analysis_complete': False,
             'error': str(e),
@@ -497,7 +518,8 @@ def analyze_pdf_safety(file_path):
             'links_count': 0,
             'suspicious_links_count': 0,
             'preview_safe': False,
-            'preview_unsafe_reasons': ['Analiza nie powiodła się']
+            'preview_unsafe_reasons': ['Analiza nie powiodła się'],
+            'safe_to_open': False
         }
 
 # Poprawmy funkcję generowania podglądu, aby obsługiwała błędy i poprawnie zamykała plik
@@ -506,9 +528,18 @@ def generate_pdf_preview(file_path, max_pages=3):
     images = []
     doc = None
     try:
-        # Sprawdź czy plik istnieje
         if not os.path.exists(file_path):
             return {'success': False, 'error': 'Nie znaleziono pliku'}
+        
+        # KRYTYCZNE: Sprawdź bezpieczeństwo przed otwarciem
+        metadata_check = analyze_pdf_safety_metadata_only(file_path)
+        if not metadata_check['safe_to_open']:
+            dangerous = [k for k, v in metadata_check['dangerous_elements'].items() if v > 0]
+            return {
+                'success': False, 
+                'error': f'Plik zawiera niebezpieczne elementy: {", ".join(dangerous)}',
+                'security_block': True
+            }
             
         doc = fitz.open(file_path)
         total_pages = min(max_pages, len(doc))
@@ -539,17 +570,20 @@ def generate_pdf_preview(file_path, max_pages=3):
         logging.error(f"Error generating PDF preview: {str(e)}")
         return {'success': False, 'error': str(e)}
     finally:
-        # Upewnij się, że dokument zostanie zamknięty
         if doc:
             try:
                 doc.close()
             except:
                 pass
 
+limiter = Limiter(key_func=lambda: request.remote_addr)
+limiter.init_app(app)
 @app.route('/')
 def index():
     return render_template('index.html')
 
+
+@limiter.limit("10 per minute")
 @app.route('/api/analyze', methods=['POST'])
 def analyze_pdf():
     """Main endpoint for PDF analysis"""
@@ -683,4 +717,4 @@ if __name__ == '__main__':
     
     print("Server will be available at: http://localhost:5000")
     print("Note: Files are securely deleted after analysis")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=False)
