@@ -177,6 +177,7 @@ def extract_links_from_pdf(file_path):
     url_pattern = r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+(?:/[-\w%!./?=&+#]*)*'
     broken_url_pattern = r'(https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+)[-\w%!./?=&+#]*(?:\n|\r\n|\r)[-\w%!./?=&+#]*'
     
+    doc = None
     try:
         # KRYTYCZNE: Sprawdź bezpieczeństwo przed otwarciem
         metadata_check = analyze_pdf_safety_metadata_only(file_path)
@@ -343,6 +344,13 @@ def extract_links_from_pdf(file_path):
     except Exception as e:
         logging.error(f"Error extracting links: {str(e)}")
         return []
+    finally:
+        # Upewnij się, że dokument zostanie zamknięty
+        if doc:
+            try:
+                doc.close()
+            except:
+                pass
 
 def analyze_pdf_safety(file_path):
     """Analyze PDF and return safety assessment"""
@@ -417,26 +425,6 @@ def analyze_pdf_safety(file_path):
                 warnings.append(f"Duża liczba obiektów: {count}")
                 content_binary['large_objects'] = 1
         
-        # KROK 3: Ekstrakcja linków tylko dla bezpiecznych plików
-        links = []
-        suspicious_links_count = 0
-        
-        if metadata_check['safe_to_open']:
-            try:
-                links = extract_links_from_pdf(file_path)
-                suspicious_links_count = sum(1 for link in links if link['suspicious'])
-                
-                if len(links) > 0:
-                    if suspicious_links_count > 0:
-                        warnings.append(f"Wykryto {len(links)} linków, w tym {suspicious_links_count} podejrzanych.")
-                    else:
-                        warnings.append(f"Wykryto {len(links)} linków - zachowaj ostrożność przy ich otwieraniu.")
-            except Exception as e:
-                logging.error(f"Error during safe link extraction: {str(e)}")
-                warnings.append("Nie można było przeanalizować linków ze względów bezpieczeństwa")
-        else:
-            warnings.append("Analiza linków pominięta ze względów bezpieczeństwa")
-        
         # Convert binary analysis to string
         binary_string = ''.join([
             str(content_binary['javascript']),
@@ -463,8 +451,28 @@ def analyze_pdf_safety(file_path):
         else:
             safety_level = "HIGH_RISK"
         
-        # Łagodniejsze ostrzeżenie
-        if len(links) > 0 and safety_level != "HIGH_RISK":
+        # KROK 3: Ekstrakcja linków tylko dla bezpiecznych plików
+        links = []
+        suspicious_links_count = 0
+        
+        if metadata_check['safe_to_open']:
+            try:
+                links = extract_links_from_pdf(file_path)
+                suspicious_links_count = sum(1 for link in links if link['suspicious'])
+                
+                if len(links) > 0:
+                    if suspicious_links_count > 0:
+                        warnings.append(f"Wykryto {len(links)} linków, w tym {suspicious_links_count} podejrzanych.")
+                    else:
+                        warnings.append(f"Wykryto {len(links)} linków - zachowaj ostrożność przy ich otwieraniu.")
+            except Exception as e:
+                logging.error(f"Error during safe link extraction: {str(e)}")
+                warnings.append("Nie można było przeanalizować linków ze względów bezpieczeństwa")
+        else:
+            warnings.append("Analiza linków pominięta ze względów bezpieczeństwa")
+        
+        # Łagodniejsze ostrzeżenie dla bezpiecznych plików z linkami
+        if len(links) > 0 and safety_level == "SAFE":
             warnings.append("Dokument zawiera linki - sprawdź je przed kliknięciem.")
         
         # Określ, czy PDF jest bezpieczny do podglądu
@@ -500,7 +508,7 @@ def analyze_pdf_safety(file_path):
             'suspicious_links_count': suspicious_links_count,
             'preview_safe': preview_safe,
             'preview_unsafe_reasons': preview_unsafe_reasons,
-            'safe_to_open': metadata_check['safe_to_open']  # Dodatkowa informacja
+            'safe_to_open': metadata_check['safe_to_open']
         }
         
     except Exception as e:
