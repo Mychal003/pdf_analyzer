@@ -1,162 +1,121 @@
-# PDF Security Analyzer
+# Analizator Bezpieczeństwa PDF
 
-Prosty serwer web do analizy bezpieczeństwa plików PDF. Wykorzystuje bibliotekę PDFiD do wykrywania potencjalnie niebezpiecznych elementów w dokumentach PDF.
+Prosta aplikacja webowa do analizy bezpieczeństwa plików PDF, która pomaga wykrywać potencjalnie niebezpieczne elementy w dokumentach PDF.
 
-## 🔍 Co analizuje
+## Funkcje
 
-- **JavaScript** - kod JS w PDF-ach
-- **Automatyczne akcje** - /AA, /OpenAction
-- **Uruchamianie programów** - /Launch
-- **Osadzone pliki** - /EmbeddedFile
-- **Szyfrowanie** - /Encrypt
-- **Podejrzane struktury** - duża liczba obiektów
+- Analiza plików PDF pod kątem zagrożeń bezpieczeństwa
+- Wykrywanie niebezpiecznych elementów (JavaScript, automatyczne akcje, osadzone pliki)
+- Identyfikacja i analiza linków zawartych w dokumentach
+- Podgląd pierwszych 3 stron dokumentu (dla bezpiecznych plików)
+- Bezpieczne usuwanie przesłanych plików po analizie
 
-## 📋 Wymagania
+## Wymagania
 
 - Python 3.7+
 - Flask
-- Biblioteka PDFiD (dołączona)
+- PyMuPDF (fitz)
+- Pillow
+- Flask-Talisman
+- Flask-Limiter
+- PDFiD
 
-## 🚀 Instalacja i uruchomienie
+## Instalacja
 
-### 1. Przygotowanie środowiska
-
-```bash
-cd /path/to/pdf_analizer
-python3 -m venv venv
-source venv/bin/activate  # Linux/Mac
-# lub
-venv\Scripts\activate     # Windows
-```
-
-### 2. Instalacja zależności
+1. Sklonuj repozytorium lub pobierz pliki projektu
+2. Zainstaluj wymagane pakiety:
 
 ```bash
-pip install -r requirements.txt
+pip install flask flask-talisman flask-limiter Pillow PyMuPDF
 ```
 
-### 3. Uruchomienie serwera
+3. Zainstaluj PDFiD zgodnie z instrukcją na [stronie projektu](https://blog.didierstevens.com/programs/pdf-tools/)
+
+## Uruchomienie
+
+Uruchom aplikację za pomocą:
 
 ```bash
 python app.py
 ```
 
-Serwer będzie dostępny pod adresem: http://localhost:5000
+Aplikacja będzie dostępna pod adresem: http://localhost:5000
 
-## 🎯 Użytkowanie
+## Korzystanie z aplikacji
 
-### Web Interface
-1. Otwórz http://localhost:5000 w przeglądarce
-2. Kliknij "Choose File" i wybierz plik PDF
+1. Otwórz stronę aplikacji w przeglądarce
+2. Przeciągnij plik PDF na wskazany obszar lub kliknij przycisk "Wybierz plik"
 3. Poczekaj na wyniki analizy
+4. Przejrzyj wyniki oraz ostrzeżenia
+5. Dla bezpiecznych plików można wyświetlić podgląd pierwszych 3 stron
 
-### API Endpoints
+## Bezpieczeństwo
 
-#### Analiza pliku PDF
-```bash
-POST /api/analyze
-Content-Type: multipart/form-data
+Aplikacja została zaprojektowana z myślą o bezpieczeństwie:
+- Przesłane pliki są bezpiecznie usuwane po analizie
+- Podgląd dokumentów jest generowany tylko dla bezpiecznych plików
+- Aplikacja identyfikuje podejrzane linki i ostrzega użytkownika
 
-curl -X POST -F "file=@document.pdf" http://localhost:5000/api/analyze
-```
+## Jak to działa
 
-**Odpowiedź:**
-```json
-{
-  "filename": "document.pdf",
-  "safety_level": "SAFE",
-  "risk_score": 0,
-  "warnings": [],
-  "is_pdf": true,
-  "header": "%PDF-1.4",
-  "analysis_id": "uuid-here",
-  "timestamp": "2025-07-29T12:00:00"
-}
-```
+### Analiza bezpieczeństwa
 
-#### Health Check
-```bash
-GET /api/health
+Proces analizy bezpieczeństwa plików PDF przebiega wieloetapowo:
 
-curl http://localhost:5000/api/health
-```
+1. **Wstępna analiza metadanych**:
+   - Aplikacja wykorzystuje narzędzie PDFiD do analizy struktury pliku PDF bez wykonywania jego kodu
+   - Sprawdzane są najbardziej niebezpieczne elementy (JavaScript, akcje automatyczne, uruchamianie programów)
+   - Na podstawie metadanych podejmowana jest decyzja czy plik jest bezpieczny do dalszej analizy
 
-## 📊 Poziomy ryzyka
+2. **Ocena poziomu ryzyka**:
+   - Każdy niebezpieczny element otrzymuje punktację ryzyka
+   - Na podstawie sumy punktów dokument jest klasyfikowany jako:
+     - Bezpieczny (SAFE)
+     - Niskiego ryzyka (LOW_RISK)
+     - Średniego ryzyka (MEDIUM_RISK)
+     - Wysokiego ryzyka (HIGH_RISK)
 
-| Poziom | Risk Score | Opis |
-|--------|------------|------|
-| **SAFE** | 0 | Brak wykrytych zagrożeń |
-| **LOW_RISK** | 1-10 | Niewielkie ryzyko (szyfrowanie, dużo obiektów) |
-| **MEDIUM_RISK** | 11-50 | Średnie ryzyko |
-| **HIGH_RISK** | 50+ | Wysokie ryzyko (JavaScript, Launch, itp.) |
+3. **Analiza linków**:
+   - Z bezpiecznych plików ekstrahowane są wszystkie linki (aktywne i zawarte w tekście)
+   - Każdy link jest analizowany pod kątem potencjalnego ryzyka:
+     - Wykrywanie skróconych URLi
+     - Sprawdzanie nieszyfrowanych połączeń (http://)
+     - Identyfikacja nietypowych domen
+     - Wykrywanie adresów IP zamiast nazw domen
 
-## 🔒 Bezpieczeństwo
+4. **Generowanie podglądu**:
+   - Podgląd generowany jest wyłącznie dla plików, które nie zawierają niebezpiecznych elementów
+   - Pierwsze 3 strony dokumentu są renderowane jako statyczne obrazy PNG
+   - Interaktywne elementy nie są aktywne w podglądzie
 
-- **Automatyczne usuwanie plików** - wszystkie przesłane pliki są usuwane po analizie
-- **Bezpieczne nadpisywanie** - pliki są nadpisywane zerami przed usunięciem
-- **Brak przechowywania danych** - serwer nie zapisuje żadnych danych użytkowników
-- **Walidacja plików** - akceptowane tylko pliki .pdf
-- **Limit rozmiaru** - maksymalnie 16MB
+### Bezpieczeństwo danych
 
-## 📁 Struktura projektu
+1. **Zabezpieczenie przesyłanych plików**:
+   - Każdy przesłany plik otrzymuje unikalny identyfikator UUID
+   - Pliki są zapisywane w tymczasowym folderze z bezpiecznymi nazwami
+   - Po analizie pliki są bezpiecznie usuwane (trzykrotne nadpisanie danych przed usunięciem)
 
-```
-pdf_analizer/
-├── app.py                 # Główny serwer Flask
-├── pdfid.py              # Biblioteka do analizy PDF
-├── requirements.txt      # Zależności Python
-├── templates/
-│   └── index.html       # Interfejs web
-├── temp_uploads/        # Katalog tymczasowy (tworzony automatycznie)
-├── logs/                # Logi aplikacji
-│   └── pdf_analyzer.log
-└── README.md           # Ta dokumentacja
-```
+2. **Ochrona przed atakami**:
+   - Aplikacja używa Flask-Talisman do wymuszania bezpiecznych nagłówków HTTP
+   - Zastosowano limitowanie liczby zapytań (10 na minutę) dla ochrony przed atakami DoS
+   - Content Security Policy ogranicza wykonywanie skryptów zewnętrznych
 
-## 🛠️ Rozwój
+3. **Izolacja niebezpiecznych plików**:
+   - Pliki zawierające JavaScript, akcje automatyczne lub osadzone pliki są traktowane jako potencjalnie złośliwe
+   - Dla takich plików nie jest generowany podgląd, co minimalizuje ryzyko uruchomienia złośliwego kodu
 
-### Uruchomienie w trybie deweloperskim
-```bash
-python app.py
-# Debug mode: ON
-# Auto-reload: ON
-```
+### Schemat przepływu danych
 
-### Produkcja
-```bash
-pip install gunicorn
-gunicorn --bind 0.0.0.0:5000 --workers 4 app:app
-```
+1. Użytkownik przesyła plik PDF poprzez interfejs webowy
+2. Backend przyjmuje plik i zapisuje go tymczasowo z unikalną nazwą
+3. Wykonywana jest analiza bezpieczeństwa metadanych
+4. Jeśli plik jest bezpieczny, przeprowadzana jest dalsza analiza linków
+5. Wyniki analizy są zwracane do interfejsu użytkownika
+6. Przesłany plik jest bezpiecznie usuwany z serwera
+7. Użytkownik może opcjonalnie wyświetlić podgląd bezpiecznego pliku
 
-## 📝 Logi
+### Ograniczenia
 
-Wszystkie operacje są logowane do:
-- Konsola (stdout)
-- Plik: `logs/pdf_analyzer.log`
-
-Format logów: `timestamp - level - message`
-
-## ⚠️ Ograniczenia
-
-- Maksymalny rozmiar pliku: 16MB
-- Obsługiwane formaty: tylko PDF
-- Analiza strukturalna: nie analizuje treści dokumentu
-- Środowisko deweloperskie: nie używać w produkcji bez dodatkowych zabezpieczeń
-
-## 🐛 Rozwiązywanie problemów
-
-### Błąd "Permission denied" przy logach
-```bash
-mkdir -p logs
-chmod 755 logs
-```
-
-### Błąd importu pdfid
-Upewnij się, że plik `pdfid.py` jest w tym samym katalogu co `app.py`
-
-### Serwer nie odpowiada
-Sprawdź czy port 5000 nie jest zajęty:
-```bash
-lsof -i :5000  # Linux/Mac
-netstat -an | findstr :5000  # Windows
-```
+- Analiza opiera się głównie na statycznych metadanych i może nie wykryć wszystkich zagrożeń
+- Ukryte lub zaszyfrowane złośliwe elementy mogą nie zostać wykryte
+- Pliki większe niż 16MB nie są obsługiwane ze względów bezpieczeństwa
